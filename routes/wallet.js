@@ -144,4 +144,6 @@ async function verifyAndUpdate(reference) {
   await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [nairaAmount, userId]);
 }
 
+
+
 module.exports = router;
