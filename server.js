@@ -9,7 +9,7 @@ const userRoutes = require("./routes/user");
 const walletRoutes = require("./routes/wallet");
 const adminRoutes = require("./routes/admin");
 const withdrawRoutes = require("./routes/withdraw");
-const transactionRoutes = require("./routes/transaction"); // 🔹 import transaction routes
+const transactionRoutes = require("./routes/transaction");
 
 const app = express();
 
@@ -23,13 +23,15 @@ app.use("/api/user", userRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/withdraw", withdrawRoutes);
-app.use("/api/transactions", transactionRoutes); // 🔹 mount transactions
+app.use("/api/transactions", transactionRoutes);
 
 // Root route
 app.get("/", (req, res) => {
-  res.send("Welcome to Polex VTU API");
+  res.send("Welcome to Polex VTU API 🚀");
 });
 
 // Start server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
