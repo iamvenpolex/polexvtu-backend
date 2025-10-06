@@ -92,7 +92,7 @@ router.post("/fund", protect, async (req, res) => {
 });
 
 // ------------------------
-// GET: Backend Callback (Paystack calls this automatically)
+// GET: Backend Callback
 // ------------------------
 router.get("/fund/callback", async (req, res) => {
   const { reference } = req.query;
@@ -116,7 +116,7 @@ async function verifyAndUpdate(reference) {
     { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
   );
 
-  const { status, amount } = response.data.data; // amount in kobo
+  const { status, amount } = response.data.data;
   if (status !== "success") throw new Error("Payment not successful");
 
   const [rows] = await db.execute(
@@ -126,7 +126,7 @@ async function verifyAndUpdate(reference) {
   if (rows.length === 0) throw new Error("Transaction not found");
 
   const transaction = rows[0];
-  if (transaction.status === "success") return; // already updated
+  if (transaction.status === "success") return;
 
   const userId = transaction.user_id;
   const nairaAmount = amount / 100;
