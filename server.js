@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
+const db = require("./config/db"); // ✅ Make sure DB connection initializes
 
 // Routes
 const authRoutes = require("./routes/auth");
@@ -12,11 +13,27 @@ const transactionRoutes = require("./routes/transaction");
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// ✅ CORS setup — allow your frontend(s)
+app.use(
+  cors({
+    origin: [
+      "http://localhost:3000",        // Local development
+      "https://polexvtu.vercel.app",  // Vercel frontend
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
-// API routes
+// ✅ Confirm DB connection at startup
+db.getConnection()
+  .then(() => console.log("✅ MySQL Connected"))
+  .catch((err) => console.error("❌ Database Connection Failed:", err));
+
+// ✅ API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/wallet", walletRoutes);
@@ -24,19 +41,10 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/withdraw", withdrawRoutes);
 app.use("/api/transactions", transactionRoutes);
 
-// Root route
-app.get("/", (req, res) => {
-  res.send("Welcome to Polex VTU API 🚀");
-});
+// ✅ Root + Health
+app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));
+app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
-// Health check route
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok" });
-});
-
-// Start server
-const PORT = process.env.PORT || 8080; // ✅ fallback port for local dev
-
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+// ✅ Start server
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log(`⚡ Server running on port ${PORT}`));

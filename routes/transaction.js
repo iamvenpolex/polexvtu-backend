@@ -29,10 +29,11 @@ router.get("/", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const [rows] = await db.query(
-      "SELECT id, reference, type, amount, status, created_at FROM transactions WHERE user_id = ? ORDER BY created_at DESC",
-      [userId]
-    );
+   const [rows] = await db.execute(
+  "SELECT id, reference, type, amount, status, created_at FROM transactions WHERE user_id = ? ORDER BY created_at DESC",
+  [userId]
+);
+
 
     // Map type to description and credit/debit
     const transactions = rows.map((tx) => {

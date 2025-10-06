@@ -9,7 +9,7 @@ const db = require("../config/db"); // MySQL connection/pool
 // Get all users
 router.get("/users", async (req, res) => {
   try {
-    const [rows] = await db.query(
+    const [rows] = await db.execute(
       "SELECT * FROM users ORDER BY created_at DESC"
     );
     res.json(rows);
@@ -23,7 +23,6 @@ router.get("/users", async (req, res) => {
 router.patch("/users/:id", async (req, res) => {
   const { balance, reward, role } = req.body;
 
-  // Validation
   if (balance < 0 || reward < 0) {
     return res.status(400).json({ error: "Balance and reward cannot be negative" });
   }
@@ -34,7 +33,7 @@ router.patch("/users/:id", async (req, res) => {
   }
 
   try {
-    await db.query(
+    await db.execute(
       "UPDATE users SET balance=?, reward=?, role=? WHERE id=?",
       [balance, reward, role, req.params.id]
     );
@@ -53,7 +52,7 @@ router.patch("/users/:id", async (req, res) => {
 // Get all transactions with user info
 router.get("/transactions", async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const [rows] = await db.execute(`
       SELECT t.id, t.reference, t.type, t.amount, t.status, t.created_at,
              u.first_name, u.last_name, u.email
       FROM transactions t
@@ -76,8 +75,7 @@ router.patch("/transactions/:id", async (req, res) => {
   }
 
   try {
-    // Get transaction
-    const [transactions] = await db.query(
+    const [transactions] = await db.execute(
       "SELECT * FROM transactions WHERE id=?",
       [req.params.id]
     );
@@ -85,19 +83,17 @@ router.patch("/transactions/:id", async (req, res) => {
 
     const transaction = transactions[0];
 
-    // Only update if status is changing
     if (transaction.status !== status) {
-      await db.query("UPDATE transactions SET status=? WHERE id=?", [status, req.params.id]);
+      await db.execute("UPDATE transactions SET status=? WHERE id=?", [status, req.params.id]);
 
-      // Adjust user balance if approved
       if (status === "success") {
         if (transaction.type === "withdraw") {
-          await db.query(
+          await db.execute(
             "UPDATE users SET balance = balance - ? WHERE id=?",
             [transaction.amount, transaction.user_id]
           );
         } else if (transaction.type === "fund") {
-          await db.query(
+          await db.execute(
             "UPDATE users SET balance = balance + ? WHERE id=?",
             [transaction.amount, transaction.user_id]
           );
@@ -119,7 +115,7 @@ router.patch("/transactions/:id", async (req, res) => {
 // Top users by income
 router.get("/top-users", async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const [rows] = await db.execute(`
       SELECT CONCAT(u.first_name, ' ', u.last_name) AS name, SUM(t.amount) AS total
       FROM transactions t
       JOIN users u ON t.user_id = u.id
@@ -144,7 +140,7 @@ router.get("/income", async (req, res) => {
     else if (range === "week") groupBy = "YEARWEEK(created_at)";
     else groupBy = "MONTH(created_at)";
 
-    const [rows] = await db.query(`
+    const [rows] = await db.execute(`
       SELECT ${groupBy} AS period, SUM(amount) AS total
       FROM transactions
       WHERE status='success'
@@ -152,12 +148,10 @@ router.get("/income", async (req, res) => {
       ORDER BY period ASC
     `);
 
-    const data = {
+    res.json({
       labels: rows.map((r) => r.period),
       totals: rows.map((r) => r.total),
-    };
-
-    res.json(data);
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });

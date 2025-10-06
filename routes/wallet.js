@@ -1,4 +1,3 @@
-// routes/wallet.js
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
@@ -30,7 +29,7 @@ const protect = (req, res, next) => {
 router.get("/balance", protect, async (req, res) => {
   try {
     const userId = req.user.id;
-    const [rows] = await db.query(
+    const [rows] = await db.execute(
       "SELECT first_name, last_name, balance, reward FROM users WHERE id = ?",
       [userId]
     );
@@ -67,7 +66,7 @@ router.post("/fund", protect, async (req, res) => {
       {
         amount: koboAmount,
         email,
-        callback_url: `${process.env.BACKEND_URL}/api/wallet/fund/callback`, // ✅ backend callback
+        callback_url: `${process.env.BACKEND_URL}/api/wallet/fund/callback`,
       },
       {
         headers: {
@@ -80,7 +79,7 @@ router.post("/fund", protect, async (req, res) => {
     const { authorization_url, reference } = response.data.data;
 
     // Save pending transaction
-    await db.query(
+    await db.execute(
       "INSERT INTO transactions (user_id, reference, amount, type, status) VALUES (?, ?, ?, ?, ?)",
       [userId, reference, amount, "fund", "pending"]
     );
@@ -101,8 +100,6 @@ router.get("/fund/callback", async (req, res) => {
 
   try {
     await verifyAndUpdate(reference);
-
-    // Optionally redirect user to frontend
     res.redirect(`${process.env.FRONTEND_URL}/dashboard/fund-wallet?status=success&reference=${reference}`);
   } catch (error) {
     console.error("Callback error:", error);
@@ -122,7 +119,7 @@ async function verifyAndUpdate(reference) {
   const { status, amount } = response.data.data; // amount in kobo
   if (status !== "success") throw new Error("Payment not successful");
 
-  const [rows] = await db.query(
+  const [rows] = await db.execute(
     "SELECT user_id, status FROM transactions WHERE reference = ?",
     [reference]
   );
@@ -135,15 +132,16 @@ async function verifyAndUpdate(reference) {
   const nairaAmount = amount / 100;
 
   // Update transaction status
-  await db.query(
+  await db.execute(
     "UPDATE transactions SET status = ?, amount = ? WHERE reference = ?",
     ["success", nairaAmount, reference]
   );
 
   // Update user's balance
-  await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [nairaAmount, userId]);
+  await db.execute(
+    "UPDATE users SET balance = balance + ? WHERE id = ?",
+    [nairaAmount, userId]
+  );
 }
-
-
 
 module.exports = router;

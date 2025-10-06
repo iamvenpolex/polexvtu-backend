@@ -31,7 +31,7 @@ router.post("/reward-to-wallet", protect, async (req, res) => {
     return res.status(400).json({ error: "Invalid amount" });
 
   try {
-    const [rows] = await db.query(
+    const [rows] = await db.execute(
       "SELECT reward, balance FROM users WHERE id=?",
       [userId]
     );
@@ -41,7 +41,7 @@ router.post("/reward-to-wallet", protect, async (req, res) => {
     if (user.reward < amount)
       return res.status(400).json({ error: "Insufficient reward balance" });
 
-    await db.query(
+    await db.execute(
       "UPDATE users SET reward = reward - ?, balance = balance + ? WHERE id=?",
       [amount, amount, userId]
     );
@@ -54,7 +54,7 @@ router.post("/reward-to-wallet", protect, async (req, res) => {
 });
 
 // ------------------------
-// WALLET → TAPAM BY EMAIL USING USERS TABLE
+// WALLET → TAPAM BY EMAIL
 // ------------------------
 router.post("/wallet-to-tapam", protect, async (req, res) => {
   const { amount, email, recipientName } = req.body;
@@ -66,10 +66,10 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
     return res.status(400).json({ error: "Email and recipient name are required" });
 
   try {
-    // Lookup recipient in users table
-    const [recipientRows] = await db.query(
+    // Lookup recipient
+    const [recipientRows] = await db.execute(
       "SELECT id, first_name, last_name, email FROM users WHERE email = ? AND id != ?",
-      [email, userId] // prevent sending to self
+      [email, userId]
     );
     if (!recipientRows.length)
       return res.status(404).json({ error: "Recipient not found" });
@@ -77,13 +77,13 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
     const recipient = recipientRows[0];
     const fullName = `${recipient.first_name} ${recipient.last_name}`;
 
-    // Verify the name matches
+    // Verify name
     if (fullName.toLowerCase() !== recipientName.toLowerCase()) {
       return res.status(400).json({ error: "Recipient name does not match" });
     }
 
-    // Get sender wallet balance
-    const [userRows] = await db.query(
+    // Sender balance
+    const [userRows] = await db.execute(
       "SELECT balance FROM users WHERE id=?",
       [userId]
     );
@@ -94,13 +94,13 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
       return res.status(400).json({ error: "Insufficient wallet balance" });
 
     // Deduct from sender
-    await db.query("UPDATE users SET balance = balance - ? WHERE id=?", [amount, userId]);
+    await db.execute("UPDATE users SET balance = balance - ? WHERE id=?", [amount, userId]);
 
     // Add to recipient
-    await db.query("UPDATE users SET balance = balance + ? WHERE id=?", [amount, recipient.id]);
+    await db.execute("UPDATE users SET balance = balance + ? WHERE id=?", [amount, recipient.id]);
 
     // Log transaction
-    await db.query(
+    await db.execute(
       "INSERT INTO transactions (user_id, type, amount, status, reference) VALUES (?, ?, ?, ?, ?)",
       [userId, "tapam-transfer", amount, "success", `TAPAM${Date.now()}`]
     );
@@ -116,14 +116,14 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
 });
 
 // ------------------------
-// LOOKUP TAPAM BY EMAIL FROM USERS TABLE
+// LOOKUP TAPAM BY EMAIL
 // ------------------------
 router.get("/tapam/lookup", protect, async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: "Email is required" });
 
   try {
-    const [rows] = await db.query(
+    const [rows] = await db.execute(
       "SELECT first_name, last_name FROM users WHERE email != '' AND email = ?",
       [email]
     );

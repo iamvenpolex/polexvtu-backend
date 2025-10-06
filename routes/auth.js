@@ -1,7 +1,6 @@
-// routes/auth.js
 const express = require("express");
 const router = express.Router();
-const { db } = require("../config/db");
+const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
@@ -16,6 +15,12 @@ router.post("/register", async (req, res) => {
   }
 
   try {
+    // Check existing user (optional but recommended)
+    const [existing] = await db.execute("SELECT id FROM users WHERE email = ? OR phone = ?", [email, phone]);
+    if (existing.length > 0) {
+      return res.status(400).json({ message: "Email or phone already in use" });
+    }
+
     const hashed = await bcrypt.hash(password, 10);
 
     const [result] = await db.execute(
