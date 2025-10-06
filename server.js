@@ -35,5 +35,8 @@ app.get("/health", (req, res) => {
 });
 
 // Start server
-const PORT = process.env.PORT ;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+const PORT = process.env.PORT || 8080; // ✅ fallback port for local dev
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
