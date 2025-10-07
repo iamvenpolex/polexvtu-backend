@@ -1,9 +1,21 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db"); // ✅ Correct import
+const cors = require("cors");
+const db = require("../config/db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const adminAuth = require("../middleware/adminAuth");
+
+// ------------------------
+// Enable CORS for frontend
+// ------------------------
+router.use(
+  cors({
+    origin: ["http://localhost:3000", "https://polexvtu-frontend.com"], // add frontend URLs
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 // ------------------------
 // TEST ENDPOINT
@@ -28,12 +40,11 @@ router.post("/login", async (req, res) => {
       [email]
     );
 
-    if (rows.length === 0)
-      return res.status(404).json({ error: "Admin not found" });
+    if (!rows.length) return res.status(404).json({ error: "Admin not found" });
 
     const admin = rows[0];
-
     const validPassword = await bcrypt.compare(password, admin.password);
+
     if (!validPassword)
       return res.status(401).json({ error: "Invalid password" });
 
@@ -58,7 +69,7 @@ router.get("/users", adminAuth, async (req, res) => {
     const [rows] = await db.execute(
       "SELECT id, first_name, last_name, email, balance, reward, role, created_at FROM users ORDER BY created_at DESC"
     );
-    res.json(rows); // ✅ Return array directly
+    res.json(rows);
   } catch (err) {
     console.error("❌ Fetch users error:", err.message);
     res.status(500).json({ error: "Server error" });
@@ -69,9 +80,7 @@ router.patch("/users/:id", adminAuth, async (req, res) => {
   const { balance, reward, role } = req.body;
 
   if (balance < 0 || reward < 0)
-    return res
-      .status(400)
-      .json({ error: "Balance and reward cannot be negative" });
+    return res.status(400).json({ error: "Balance and reward cannot be negative" });
 
   const validRoles = ["user", "admin"];
   if (role && !validRoles.includes(role))
@@ -101,7 +110,7 @@ router.get("/transactions", adminAuth, async (req, res) => {
       JOIN users u ON t.user_id = u.id
       ORDER BY t.created_at DESC
     `);
-    res.json(rows); // ✅ Return array directly
+    res.json(rows);
   } catch (err) {
     console.error("❌ Fetch transactions error:", err.message);
     res.status(500).json({ error: "Server error" });

@@ -20,7 +20,7 @@ app.use(
       "http://localhost:3000",        // Local development
       "https://polexvtu.vercel.app",  // Vercel frontend
     ],
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // PATCH added
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
