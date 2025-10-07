@@ -1,55 +1,51 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db"); // ✅ Correct import (no destructuring)
+const db = require("../config/db"); // ✅ Correct import
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
-const adminAuth = require("../middleware/adminAuth"); // ✅ Middleware path
+const adminAuth = require("../middleware/adminAuth");
 
 // ------------------------
-// TEST ENDPOINT (GET)
+// TEST ENDPOINT
 // ------------------------
 router.get("/login", (req, res) => {
   res.send("✅ Admin login endpoint is live. Use POST to login.");
 });
 
 // ------------------------
-// ADMIN LOGIN (POST)
+// ADMIN LOGIN
 // ------------------------
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    console.log("🟡 Admin login attempt:", email);
+    if (!db || !db.execute) {
+      return res.status(500).json({ error: "Database connection error" });
+    }
 
-    // Check if admin exists
     const [rows] = await db.execute(
       "SELECT * FROM users WHERE email = ? AND role = 'admin'",
       [email]
     );
 
-    if (rows.length === 0) {
+    if (rows.length === 0)
       return res.status(404).json({ error: "Admin not found" });
-    }
 
     const admin = rows[0];
 
-    // Verify password
     const validPassword = await bcrypt.compare(password, admin.password);
-    if (!validPassword) {
+    if (!validPassword)
       return res.status(401).json({ error: "Invalid password" });
-    }
 
-    // Generate JWT token
     const token = jwt.sign(
       { id: admin.id, email: admin.email, role: "admin" },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
 
-    console.log("✅ Admin login successful:", email);
     res.json({ message: "Login successful", token });
   } catch (err) {
-    console.error("❌ Admin login error:", err);
+    console.error("❌ Admin login error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -59,10 +55,12 @@ router.post("/login", async (req, res) => {
 // ------------------------
 router.get("/users", adminAuth, async (req, res) => {
   try {
-    const [rows] = await db.execute("SELECT * FROM users ORDER BY created_at DESC");
-    res.json(rows);
+    const [rows] = await db.execute(
+      "SELECT id, first_name, last_name, email, balance, reward, role, created_at FROM users ORDER BY created_at DESC"
+    );
+    res.json(rows); // ✅ Return array directly
   } catch (err) {
-    console.error("❌ Fetch users error:", err);
+    console.error("❌ Fetch users error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -70,14 +68,14 @@ router.get("/users", adminAuth, async (req, res) => {
 router.patch("/users/:id", adminAuth, async (req, res) => {
   const { balance, reward, role } = req.body;
 
-  if (balance < 0 || reward < 0) {
-    return res.status(400).json({ error: "Balance and reward cannot be negative" });
-  }
+  if (balance < 0 || reward < 0)
+    return res
+      .status(400)
+      .json({ error: "Balance and reward cannot be negative" });
 
   const validRoles = ["user", "admin"];
-  if (role && !validRoles.includes(role)) {
+  if (role && !validRoles.includes(role))
     return res.status(400).json({ error: "Invalid role" });
-  }
 
   try {
     await db.execute(
@@ -86,7 +84,7 @@ router.patch("/users/:id", adminAuth, async (req, res) => {
     );
     res.json({ message: "User updated successfully" });
   } catch (err) {
-    console.error("❌ Update user error:", err);
+    console.error("❌ Update user error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -103,9 +101,9 @@ router.get("/transactions", adminAuth, async (req, res) => {
       JOIN users u ON t.user_id = u.id
       ORDER BY t.created_at DESC
     `);
-    res.json(rows);
+    res.json(rows); // ✅ Return array directly
   } catch (err) {
-    console.error("❌ Fetch transactions error:", err);
+    console.error("❌ Fetch transactions error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -113,37 +111,43 @@ router.get("/transactions", adminAuth, async (req, res) => {
 router.patch("/transactions/:id", adminAuth, async (req, res) => {
   const { status } = req.body;
 
-  if (!["success", "failed"].includes(status)) {
+  if (!["success", "failed"].includes(status))
     return res.status(400).json({ error: "Invalid status" });
-  }
 
   try {
-    const [transactions] = await db.execute("SELECT * FROM transactions WHERE id=?", [req.params.id]);
-    if (!transactions.length) return res.status(404).json({ error: "Transaction not found" });
+    const [transactions] = await db.execute(
+      "SELECT * FROM transactions WHERE id=?",
+      [req.params.id]
+    );
+    if (!transactions.length)
+      return res.status(404).json({ error: "Transaction not found" });
 
     const transaction = transactions[0];
 
     if (transaction.status !== status) {
-      await db.execute("UPDATE transactions SET status=? WHERE id=?", [status, req.params.id]);
+      await db.execute("UPDATE transactions SET status=? WHERE id=?", [
+        status,
+        req.params.id,
+      ]);
 
       if (status === "success") {
         if (transaction.type === "withdraw") {
-          await db.execute("UPDATE users SET balance = balance - ? WHERE id=?", [
-            transaction.amount,
-            transaction.user_id,
-          ]);
+          await db.execute(
+            "UPDATE users SET balance = balance - ? WHERE id=?",
+            [transaction.amount, transaction.user_id]
+          );
         } else if (transaction.type === "fund") {
-          await db.execute("UPDATE users SET balance = balance + ? WHERE id=?", [
-            transaction.amount,
-            transaction.user_id,
-          ]);
+          await db.execute(
+            "UPDATE users SET balance = balance + ? WHERE id=?",
+            [transaction.amount, transaction.user_id]
+          );
         }
       }
     }
 
     res.json({ message: "Transaction updated successfully" });
   } catch (err) {
-    console.error("❌ Update transaction error:", err);
+    console.error("❌ Update transaction error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -164,7 +168,7 @@ router.get("/top-users", adminAuth, async (req, res) => {
     `);
     res.json(rows);
   } catch (err) {
-    console.error("❌ Top users error:", err);
+    console.error("❌ Top users error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -172,10 +176,12 @@ router.get("/top-users", adminAuth, async (req, res) => {
 router.get("/income", adminAuth, async (req, res) => {
   try {
     const range = req.query.range || "day";
-    let groupBy;
-    if (range === "day") groupBy = "DATE(created_at)";
-    else if (range === "week") groupBy = "YEARWEEK(created_at)";
-    else groupBy = "MONTH(created_at)";
+    const groupBy =
+      range === "week"
+        ? "YEARWEEK(created_at)"
+        : range === "month"
+        ? "MONTH(created_at)"
+        : "DATE(created_at)";
 
     const [rows] = await db.execute(`
       SELECT ${groupBy} AS period, SUM(amount) AS total
@@ -190,7 +196,7 @@ router.get("/income", adminAuth, async (req, res) => {
       totals: rows.map((r) => r.total),
     });
   } catch (err) {
-    console.error("❌ Income analytics error:", err);
+    console.error("❌ Income analytics error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
