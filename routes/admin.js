@@ -1,32 +1,43 @@
 const express = require("express");
 const router = express.Router();
-const { db } = require("../config/db");
+const db = require("../config/db"); // ✅ Correct import (no destructuring)
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const adminAuth = require("../middleware/adminAuth"); // ✅ Middleware path
 
 // ------------------------
-// ADMIN LOGIN
+// TEST ENDPOINT (GET)
+// ------------------------
+router.get("/login", (req, res) => {
+  res.send("✅ Admin login endpoint is live. Use POST to login.");
+});
+
+// ------------------------
+// ADMIN LOGIN (POST)
 // ------------------------
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
+    console.log("🟡 Admin login attempt:", email);
+
     // Check if admin exists
     const [rows] = await db.execute(
       "SELECT * FROM users WHERE email = ? AND role = 'admin'",
       [email]
     );
 
-    if (rows.length === 0)
+    if (rows.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
+    }
 
     const admin = rows[0];
 
     // Verify password
     const validPassword = await bcrypt.compare(password, admin.password);
-    if (!validPassword)
+    if (!validPassword) {
       return res.status(401).json({ error: "Invalid password" });
+    }
 
     // Generate JWT token
     const token = jwt.sign(
@@ -35,9 +46,10 @@ router.post("/login", async (req, res) => {
       { expiresIn: "1d" }
     );
 
+    console.log("✅ Admin login successful:", email);
     res.json({ message: "Login successful", token });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Admin login error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -50,7 +62,7 @@ router.get("/users", adminAuth, async (req, res) => {
     const [rows] = await db.execute("SELECT * FROM users ORDER BY created_at DESC");
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error("❌ Fetch users error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -74,7 +86,7 @@ router.patch("/users/:id", adminAuth, async (req, res) => {
     );
     res.json({ message: "User updated successfully" });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Update user error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -93,7 +105,7 @@ router.get("/transactions", adminAuth, async (req, res) => {
     `);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error("❌ Fetch transactions error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -131,7 +143,7 @@ router.patch("/transactions/:id", adminAuth, async (req, res) => {
 
     res.json({ message: "Transaction updated successfully" });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Update transaction error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -152,7 +164,7 @@ router.get("/top-users", adminAuth, async (req, res) => {
     `);
     res.json(rows);
   } catch (err) {
-    console.error(err);
+    console.error("❌ Top users error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -178,7 +190,7 @@ router.get("/income", adminAuth, async (req, res) => {
       totals: rows.map((r) => r.total),
     });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Income analytics error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
