@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
-const db = require("./config/db"); // ✅ Make sure DB connection initializes
+const db = require("./config/db");
 
 // Routes
 const authRoutes = require("./routes/auth");
@@ -13,22 +13,30 @@ const transactionRoutes = require("./routes/transaction");
 
 const app = express();
 
-// ✅ CORS setup — allow your frontend(s)
+// ✅ Allowed origins
+const allowedOrigins = [
+  "http://localhost:3000",       // Local dev
+  "https://polexvtu.vercel.app", // Production frontend
+];
+
+// ✅ CORS setup (handles preflight automatically)
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",        // Local development
-      "https://polexvtu.vercel.app",  // Vercel frontend
-    ],
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // PATCH added
+    origin: function (origin, callback) {
+      // allow requests with no origin (e.g., mobile apps, curl)
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
 );
 
+// ✅ Parse JSON bodies
 app.use(express.json());
 
-// ✅ Confirm DB connection at startup
+// ✅ Confirm DB connection
 db.getConnection()
   .then(() => console.log("✅ MySQL Connected"))
   .catch((err) => console.error("❌ Database Connection Failed:", err));
@@ -41,7 +49,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/withdraw", withdrawRoutes);
 app.use("/api/transactions", transactionRoutes);
 
-// ✅ Root + Health
+// ✅ Root + Health check
 app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
