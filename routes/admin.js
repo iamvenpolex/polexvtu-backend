@@ -1,17 +1,53 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db"); // MySQL connection/pool
+const { db } = require("../config/db");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const adminAuth = require("../middleware/adminAuth"); // ✅ Middleware path
+
+// ------------------------
+// ADMIN LOGIN
+// ------------------------
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    // Check if admin exists
+    const [rows] = await db.execute(
+      "SELECT * FROM users WHERE email = ? AND role = 'admin'",
+      [email]
+    );
+
+    if (rows.length === 0)
+      return res.status(404).json({ error: "Admin not found" });
+
+    const admin = rows[0];
+
+    // Verify password
+    const validPassword = await bcrypt.compare(password, admin.password);
+    if (!validPassword)
+      return res.status(401).json({ error: "Invalid password" });
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: admin.id, email: admin.email, role: "admin" },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    res.json({ message: "Login successful", token });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 // ------------------------
 // USERS MANAGEMENT
 // ------------------------
-
-// Get all users
-router.get("/users", async (req, res) => {
+router.get("/users", adminAuth, async (req, res) => {
   try {
-    const [rows] = await db.execute(
-      "SELECT * FROM users ORDER BY created_at DESC"
-    );
+    const [rows] = await db.execute("SELECT * FROM users ORDER BY created_at DESC");
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -19,8 +55,7 @@ router.get("/users", async (req, res) => {
   }
 });
 
-// Update user balance / reward / role with validation
-router.patch("/users/:id", async (req, res) => {
+router.patch("/users/:id", adminAuth, async (req, res) => {
   const { balance, reward, role } = req.body;
 
   if (balance < 0 || reward < 0) {
@@ -37,7 +72,6 @@ router.patch("/users/:id", async (req, res) => {
       "UPDATE users SET balance=?, reward=?, role=? WHERE id=?",
       [balance, reward, role, req.params.id]
     );
-
     res.json({ message: "User updated successfully" });
   } catch (err) {
     console.error(err);
@@ -48,9 +82,7 @@ router.patch("/users/:id", async (req, res) => {
 // ------------------------
 // TRANSACTIONS MANAGEMENT
 // ------------------------
-
-// Get all transactions with user info
-router.get("/transactions", async (req, res) => {
+router.get("/transactions", adminAuth, async (req, res) => {
   try {
     const [rows] = await db.execute(`
       SELECT t.id, t.reference, t.type, t.amount, t.status, t.created_at,
@@ -66,19 +98,15 @@ router.get("/transactions", async (req, res) => {
   }
 });
 
-// Approve or reject transaction and adjust user balance automatically
-router.patch("/transactions/:id", async (req, res) => {
-  const { status } = req.body; // 'success' or 'failed'
+router.patch("/transactions/:id", adminAuth, async (req, res) => {
+  const { status } = req.body;
 
   if (!["success", "failed"].includes(status)) {
     return res.status(400).json({ error: "Invalid status" });
   }
 
   try {
-    const [transactions] = await db.execute(
-      "SELECT * FROM transactions WHERE id=?",
-      [req.params.id]
-    );
+    const [transactions] = await db.execute("SELECT * FROM transactions WHERE id=?", [req.params.id]);
     if (!transactions.length) return res.status(404).json({ error: "Transaction not found" });
 
     const transaction = transactions[0];
@@ -88,15 +116,15 @@ router.patch("/transactions/:id", async (req, res) => {
 
       if (status === "success") {
         if (transaction.type === "withdraw") {
-          await db.execute(
-            "UPDATE users SET balance = balance - ? WHERE id=?",
-            [transaction.amount, transaction.user_id]
-          );
+          await db.execute("UPDATE users SET balance = balance - ? WHERE id=?", [
+            transaction.amount,
+            transaction.user_id,
+          ]);
         } else if (transaction.type === "fund") {
-          await db.execute(
-            "UPDATE users SET balance = balance + ? WHERE id=?",
-            [transaction.amount, transaction.user_id]
-          );
+          await db.execute("UPDATE users SET balance = balance + ? WHERE id=?", [
+            transaction.amount,
+            transaction.user_id,
+          ]);
         }
       }
     }
@@ -109,11 +137,9 @@ router.patch("/transactions/:id", async (req, res) => {
 });
 
 // ------------------------
-// ANALYTICS ENDPOINTS
+// ANALYTICS
 // ------------------------
-
-// Top users by income
-router.get("/top-users", async (req, res) => {
+router.get("/top-users", adminAuth, async (req, res) => {
   try {
     const [rows] = await db.execute(`
       SELECT CONCAT(u.first_name, ' ', u.last_name) AS name, SUM(t.amount) AS total
@@ -131,8 +157,7 @@ router.get("/top-users", async (req, res) => {
   }
 });
 
-// Income per day/week/month
-router.get("/income", async (req, res) => {
+router.get("/income", adminAuth, async (req, res) => {
   try {
     const range = req.query.range || "day";
     let groupBy;
