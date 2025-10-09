@@ -5,7 +5,7 @@ const qs = require("qs");
 const db = require("../config/db");
 const router = express.Router();
 
-const AUTH_TOKEN = process.env.EASY_ACCESS_TOKEN;
+const AUTH_TOKEN = process.env.EASY_ACCESS_TOKEN; // keep token in .env
 const BASE_URL = "https://easyaccessapi.com.ng/api/data.php";
 
 // ✅ Fetch Data Plans
@@ -13,28 +13,28 @@ router.get("/data", async (req, res) => {
   try {
     console.log("📡 Fetching EasyAccess data plans...");
 
-    const config = {
-      method: "post",
-      url: BASE_URL,
-      headers: {
-        AuthorizationToken: AUTH_TOKEN,
-        "cache-control": "no-cache",
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      data: qs.stringify({}),
-    };
+    const response = await axios.post(
+      BASE_URL,
+      qs.stringify({}),
+      {
+        headers: {
+          AuthorizationToken: AUTH_TOKEN,
+          "cache-control": "no-cache",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
 
-    const response = await axios(config);
+    console.log("✅ EasyAccess response received:", response.data);
 
-    console.log("✅ EasyAccess response received.");
-
-    // ✅ Extract plans safely
-    const plans =
-      response.data?.data && Array.isArray(response.data.data)
-        ? response.data.data
-        : Array.isArray(response.data)
-        ? response.data
-        : [];
+    // ✅ Normalize plans into an array
+    let plans = [];
+    if (response.data && typeof response.data === "object") {
+      // Convert object of plans to array if needed
+      plans = Object.values(response.data);
+    } else if (Array.isArray(response.data)) {
+      plans = response.data;
+    }
 
     if (plans.length === 0) {
       console.error("❌ No plans found or unexpected data format:", response.data);
@@ -51,8 +51,7 @@ router.get("/data", async (req, res) => {
       );
     }
 
-    // ✅ Always return a clean array
-    res.status(200).json(plans);
+    res.status(200).json(plans); // Always send array
   } catch (error) {
     console.error("❌ Error fetching plans:", error.response?.data || error.message);
     res.status(500).json({
