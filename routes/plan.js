@@ -43,13 +43,25 @@ router.get("/data", async (req, res) => {
         }
       );
 
-      const plans = response.data?.data || response.data || [];
-      if (!Array.isArray(plans)) {
-        console.error(`❌ Unexpected format for ${network}:`, response.data);
+      // Handle different API response formats
+      let plans = [];
+      if (Array.isArray(response.data)) {
+        plans = response.data;
+      } else if (Array.isArray(response.data?.data)) {
+        plans = response.data.data;
+      } else if (Array.isArray(response.data?.plans)) {
+        plans = response.data.plans;
+      } else {
+        console.warn(`❌ Unexpected format for ${network}:`, response.data);
         continue;
       }
 
-      // Save network info in each plan
+      if (!plans.length) {
+        console.warn(`⚠️ No plans returned for ${network}`);
+        continue;
+      }
+
+      // Add network info
       const normalizedPlans = plans.map((plan) => ({
         ...plan,
         network,
@@ -57,7 +69,7 @@ router.get("/data", async (req, res) => {
 
       allPlans.push(...normalizedPlans);
 
-      // ✅ Save in DB
+      // Save to DB
       for (const plan of normalizedPlans) {
         await db.query(
           `INSERT INTO plans (plan_id, network, plan_name, price)
