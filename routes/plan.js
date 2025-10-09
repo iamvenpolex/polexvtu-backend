@@ -30,13 +30,13 @@ router.get("/data", async (req, res) => {
     // ✅ Normalize plans into an array
     let plans = [];
     if (response.data && typeof response.data === "object") {
-      // Convert object of plans to array if needed
+      // If response is an object of plans, convert to array
       plans = Object.values(response.data);
     } else if (Array.isArray(response.data)) {
       plans = response.data;
     }
 
-    if (plans.length === 0) {
+    if (!plans.length) {
       console.error("❌ No plans found or unexpected data format:", response.data);
       return res.status(500).json({ message: "No data plans found" });
     }
@@ -51,7 +51,8 @@ router.get("/data", async (req, res) => {
       );
     }
 
-    res.status(200).json(plans); // Always send array
+    // ✅ Always return an array to frontend
+    res.status(200).json(plans);
   } catch (error) {
     console.error("❌ Error fetching plans:", error.response?.data || error.message);
     res.status(500).json({
