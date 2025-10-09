@@ -62,4 +62,30 @@ router.get("/data", async (req, res) => {
   }
 });
 
+// 🔧 DEBUG: Check raw EasyAccess response
+router.get("/data-debug", async (req, res) => {
+  try {
+    console.log("📡 Fetching EasyAccess data plans (DEBUG)...");
+
+    const response = await axios.post(
+      BASE_URL,
+      qs.stringify({}),
+      {
+        headers: {
+          AuthorizationToken: AUTH_TOKEN,
+          "cache-control": "no-cache",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+
+    console.log("✅ EasyAccess RAW response:", response.data);
+
+    res.json({ raw: response.data }); // send raw response to browser
+  } catch (error) {
+    console.error("❌ Error fetching plans (DEBUG):", error.response?.data || error.message);
+    res.status(500).json({ message: "Failed to fetch data plans", error: error.message });
+  }
+});
+
 module.exports = router;
