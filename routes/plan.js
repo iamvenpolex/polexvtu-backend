@@ -4,7 +4,7 @@ const axios = require("axios");
 const db = require("../config/db");
 const router = express.Router();
 
-const BASE_URL = "https://easyaccessapi.com/api/v1"; // ✅ EasyAccess base URL
+const BASE_URL = "https://easyaccessapi.com.ng/api/v1"; // ✅ EasyAccess base URL
 const AUTH_TOKEN = "your_real_token_here"; // ✅ replace this with your actual token
 
 // ✅ Fetch Data Plans from EasyAccess
