@@ -4,10 +4,48 @@ const axios = require("axios");
 const db = require("../config/db");
 const router = express.Router();
 
-const AUTH_TOKEN = process.env.EASY_ACCESS_TOKEN; // ✅ keep token in .env
+const AUTH_TOKEN = process.env.EASY_ACCESS_TOKEN; // ✅ Store this securely in .env
 const BASE_URL = "https://easyaccessapi.com.ng/api";
 
-// ✅ Buy Data
+// ===============================
+// ✅ FETCH DATA PLANS
+// ===============================
+router.get("/data-plans", async (req, res) => {
+  try {
+    console.log("📡 Fetching EasyAccess data plans...");
+
+    const response = await axios.get(`${BASE_URL}/data.php`, {
+      headers: {
+        AuthorizationToken: AUTH_TOKEN,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
+
+    console.log("✅ EasyAccess response received:", response.data);
+
+    // ✅ Verify format
+    if (!response.data || typeof response.data !== "object") {
+      console.error("❌ No plans found or unexpected format:", response.data);
+      return res.status(404).json({
+        message: "No data plans found or unexpected format",
+        response: response.data,
+      });
+    }
+
+    // ✅ Send the plans directly
+    res.json(response.data);
+  } catch (error) {
+    console.error("❌ Error fetching plans:", error.response?.data || error.message);
+    res.status(500).json({
+      message: "Failed to fetch data plans",
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+// ===============================
+// ✅ BUY DATA
+// ===============================
 router.post("/buy-data", async (req, res) => {
   const { userId, network, mobile_number, plan_id } = req.body;
 
@@ -33,23 +71,29 @@ router.post("/buy-data", async (req, res) => {
       return res.status(400).json({ message: "Insufficient wallet balance" });
     }
 
-    // ✅ Send API request to EasyAccess
-    const response = await axios.post(
-      `${BASE_URL}/data/`,
-      {
-        network,
-        mobile_number,
-        plan: plan_id,
-        Ported_number: true,
-      },
-      {
-        headers: { Authorization: `Token ${AUTH_TOKEN}` },
-      }
-    );
+    // ✅ Prepare request to EasyAccess
+    const data = new URLSearchParams({
+      network,
+      mobileno: mobile_number,
+      dataplan: plan_id,
+      client_reference: `tranx${Date.now()}`,
+    });
 
-    // ✅ Check API response
+    const response = await axios.post(`${BASE_URL}/data.php`, data, {
+      headers: {
+        AuthorizationToken: AUTH_TOKEN,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
+
+    console.log("📨 EasyAccess Purchase Response:", response.data);
+
+    // ✅ Validate API response
     if (response.data.status !== "successful") {
-      return res.status(400).json({ message: "Purchase failed", data: response.data });
+      return res.status(400).json({
+        message: "Purchase failed",
+        data: response.data,
+      });
     }
 
     // ✅ Deduct balance and record transaction
@@ -64,8 +108,11 @@ router.post("/buy-data", async (req, res) => {
       transaction: response.data,
     });
   } catch (error) {
-    console.error("Error buying data:", error.message);
-    res.status(500).json({ message: "Error processing transaction", error: error.message });
+    console.error("❌ Error buying data:", error.response?.data || error.message);
+    res.status(500).json({
+      message: "Error processing transaction",
+      error: error.response?.data || error.message,
+    });
   }
 });
 
