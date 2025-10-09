@@ -16,6 +16,14 @@ const NETWORK_CODES = {
   "9MOBILE": "04",
 };
 
+// Normalize network input for debug route
+const normalizeNetwork = (input) => {
+  input = input.toUpperCase();
+  if (input === "9M" || input === "9MOBILE") return "9MOBILE";
+  if (NETWORK_CODES[input]) return input;
+  return null;
+};
+
 // ✅ Fetch Data Plans for all networks
 router.get("/data", async (req, res) => {
   try {
@@ -26,7 +34,7 @@ router.get("/data", async (req, res) => {
 
       const response = await axios.post(
         BASE_URL,
-        qs.stringify({ network: code }), // send network code
+        qs.stringify({ network: code }),
         {
           headers: {
             AuthorizationToken: AUTH_TOKEN,
@@ -76,8 +84,8 @@ router.get("/data", async (req, res) => {
 // DEBUG: Fetch raw response for a single network
 router.get("/data-debug/:network", async (req, res) => {
   try {
-    const network = req.params.network.toUpperCase();
-    if (!NETWORK_CODES[network]) {
+    const network = normalizeNetwork(req.params.network);
+    if (!network) {
       return res.status(400).json({ message: "Invalid network" });
     }
 
