@@ -8,80 +8,92 @@ const router = express.Router();
 const AUTH_TOKEN = process.env.EASY_ACCESS_TOKEN; // keep token in .env
 const BASE_URL = "https://easyaccessapi.com.ng/api/data.php";
 
-// ✅ Fetch Data Plans
+// Network codes
+const NETWORK_CODES = {
+  MTN: "01",
+  GLO: "02",
+  AIRTEL: "03",
+  "9MOBILE": "04",
+};
+
+// ✅ Fetch Data Plans for all networks
 router.get("/data", async (req, res) => {
   try {
-    console.log("📡 Fetching EasyAccess data plans...");
+    let allPlans = [];
 
-    const response = await axios.post(
-      BASE_URL,
-      qs.stringify({}),
-      {
-        headers: {
-          AuthorizationToken: AUTH_TOKEN,
-          "cache-control": "no-cache",
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
+    for (const [network, code] of Object.entries(NETWORK_CODES)) {
+      console.log(`📡 Fetching ${network} plans...`);
+
+      const response = await axios.post(
+        BASE_URL,
+        qs.stringify({ network: code }), // send network code
+        {
+          headers: {
+            AuthorizationToken: AUTH_TOKEN,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+        }
+      );
+
+      const plans = response.data?.data || response.data || [];
+      if (!Array.isArray(plans)) {
+        console.error(`❌ Unexpected format for ${network}:`, response.data);
+        continue;
       }
-    );
 
-    console.log("✅ EasyAccess response received:", response.data);
+      // Save network info in each plan
+      const normalizedPlans = plans.map((plan) => ({
+        ...plan,
+        network,
+      }));
 
-    // ✅ Normalize plans into an array
-    let plans = [];
-    if (response.data && typeof response.data === "object") {
-      // If response is an object of plans, convert to array
-      plans = Object.values(response.data);
-    } else if (Array.isArray(response.data)) {
-      plans = response.data;
+      allPlans.push(...normalizedPlans);
+
+      // ✅ Save in DB
+      for (const plan of normalizedPlans) {
+        await db.query(
+          `INSERT INTO plans (plan_id, network, plan_name, price)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE plan_name = VALUES(plan_name), price = VALUES(price)`,
+          [plan.plan_id, plan.network, plan.name || plan.plan_name, plan.price]
+        );
+      }
+
+      console.log(`✅ ${network} plans fetched: ${normalizedPlans.length}`);
     }
 
-    if (!plans.length) {
-      console.error("❌ No plans found or unexpected data format:", response.data);
+    if (!allPlans.length) {
       return res.status(500).json({ message: "No data plans found" });
     }
 
-    // ✅ Save plans in DB
-    for (const plan of plans) {
-      await db.query(
-        `INSERT INTO plans (plan_id, network, plan_name, price)
-         VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE plan_name = VALUES(plan_name), price = VALUES(price)`,
-        [plan.plan_id, plan.network, plan.plan_name, plan.price]
-      );
-    }
-
-    // ✅ Always return an array to frontend
-    res.status(200).json(plans);
+    res.json(allPlans);
   } catch (error) {
-    console.error("❌ Error fetching plans:", error.response?.data || error.message);
-    res.status(500).json({
-      message: "Failed to fetch data plans",
-      error: error.response?.data || error.message,
-    });
+    console.error("❌ Error fetching data plans:", error.response?.data || error.message);
+    res.status(500).json({ message: "Failed to fetch data plans", error: error.message });
   }
 });
 
-// 🔧 DEBUG: Check raw EasyAccess response
-router.get("/data-debug", async (req, res) => {
+// DEBUG: Fetch raw response for a single network
+router.get("/data-debug/:network", async (req, res) => {
   try {
-    console.log("📡 Fetching EasyAccess data plans (DEBUG)...");
+    const network = req.params.network.toUpperCase();
+    if (!NETWORK_CODES[network]) {
+      return res.status(400).json({ message: "Invalid network" });
+    }
 
     const response = await axios.post(
       BASE_URL,
-      qs.stringify({}),
+      qs.stringify({ network: NETWORK_CODES[network] }),
       {
         headers: {
           AuthorizationToken: AUTH_TOKEN,
-          "cache-control": "no-cache",
           "Content-Type": "application/x-www-form-urlencoded",
         },
       }
     );
 
-    console.log("✅ EasyAccess RAW response:", response.data);
-
-    res.json({ raw: response.data }); // send raw response to browser
+    console.log(`✅ EasyAccess RAW response for ${network}:`, response.data);
+    res.json({ raw: response.data });
   } catch (error) {
     console.error("❌ Error fetching plans (DEBUG):", error.response?.data || error.message);
     res.status(500).json({ message: "Failed to fetch data plans", error: error.message });
