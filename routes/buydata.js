@@ -6,27 +6,28 @@ const db = require("../config/db"); // MySQL connection
 const router = express.Router();
 
 const BASE_URL = "https://easyaccessapi.com.ng/api/data.php";
-const API_TOKEN = process.env.EASY_ACCESS_TOKEN; // Use ENV for security
+const API_TOKEN = process.env.EASY_ACCESS_TOKEN; // ENV token
 
-/**
- * POST /buydata
- * Body: { user_id, network, mobile_no, dataplan, client_reference }
- */
 router.post("/", async (req, res) => {
   const { user_id, network, mobile_no, dataplan, client_reference } = req.body;
 
   if (!user_id || !network || !mobile_no || !dataplan || !client_reference) {
+    console.log("❌ Missing required fields:", req.body);
     return res.status(400).json({ success: false, message: "Missing required fields" });
   }
 
   if (!/^\d{11}$/.test(mobile_no)) {
+    console.log("❌ Invalid mobile number:", mobile_no);
     return res.status(400).json({ success: false, message: "Mobile number must be 11 digits" });
   }
 
   try {
     // Fetch user
     const [users] = await db.query("SELECT id, balance FROM users WHERE id = ?", [user_id]);
-    if (!users.length) return res.status(404).json({ success: false, message: "User not found" });
+    if (!users.length) {
+      console.log("❌ User not found:", user_id);
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
     const user = users[0];
 
     // Fetch plan price
@@ -34,12 +35,16 @@ router.post("/", async (req, res) => {
       "SELECT plan_id, plan_name, custom_price FROM custom_data_prices WHERE plan_id = ? AND status='active'",
       [dataplan]
     );
-    if (!plans.length) return res.status(400).json({ success: false, message: "Plan not available" });
+    if (!plans.length) {
+      console.log("❌ Plan not available:", dataplan);
+      return res.status(400).json({ success: false, message: "Plan not available" });
+    }
     const plan = plans[0];
     const price = parseFloat(plan.custom_price);
 
     // Check balance
     if (user.balance < price) {
+      console.log("❌ Insufficient balance", { user_balance: user.balance, price });
       return res.status(400).json({
         success: false,
         message: "Insufficient balance",
@@ -48,12 +53,12 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Deduct balance and store transaction
+    // Deduct balance
     const balance_before = parseFloat(user.balance);
     const balance_after = balance_before - price;
-
     await db.query("UPDATE users SET balance = ? WHERE id = ?", [balance_after, user.id]);
 
+    // Insert transaction
     const transactionData = {
       user_id: user.id,
       reference: client_reference,
@@ -91,15 +96,18 @@ router.post("/", async (req, res) => {
       ]
     );
 
-    // Call EasyAccess API using form-urlencoded
+    // Prepare EasyAccess request
     const params = new URLSearchParams();
     params.append("network", network);
     params.append("mobileno", mobile_no);
     params.append("dataplan", dataplan);
     params.append("client_reference", client_reference);
     params.append("max_amount_payable", price.toString());
-    params.append("webhook_url", "https://polexvtu-backend-production.up.railway.app/buydata/webhook");
+    params.append("webhook_url", "https://YOUR_DEPLOYED_BACKEND_URL/buydata/webhook");
 
+    console.log(`➡️ Sending request to EasyAccess [${client_reference}]:`, params.toString());
+
+    // Send request
     const response = await axios.post(BASE_URL, params.toString(), {
       headers: {
         "AuthorizationToken": API_TOKEN,
@@ -107,7 +115,7 @@ router.post("/", async (req, res) => {
       },
     });
 
-    console.log("EasyAccess API response:", response.data);
+    console.log(`✅ EasyAccess response [${client_reference}]:`, response.data);
 
     // Update api_amount if returned
     if (response.data?.amount) {
@@ -131,55 +139,12 @@ router.post("/", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Buy data error:", error);
-
-    // Optional: refund if needed
-    // await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [price, user_id]);
-
+    console.error(`❌ Buy data error [${client_reference}]:`, error);
     return res.status(500).json({
       success: false,
       message: "Error purchasing data",
       error: error.message,
     });
-  }
-});
-
-/**
- * POST /buydata/webhook
- * EasyAccess sends transaction updates here
- */
-router.post("/webhook", async (req, res) => {
-  const payload = req.body;
-
-  try {
-    const { client_reference, status, amount: apiAmount } = payload;
-    if (!client_reference) return res.status(400).json({ success: false, message: "No client_reference" });
-
-    const [transactions] = await db.query("SELECT * FROM transactions WHERE reference = ?", [client_reference]);
-    if (!transactions.length) return res.status(404).json({ success: false, message: "Transaction not found" });
-
-    const transaction = transactions[0];
-
-    console.log(`Webhook received for reference: ${client_reference}`, payload);
-
-    if (apiAmount) {
-      await db.query("UPDATE transactions SET api_amount = ? WHERE id = ?", [apiAmount, transaction.id]);
-    }
-
-    if (status === "success") {
-      await db.query("UPDATE transactions SET status = 'success' WHERE id = ?", [transaction.id]);
-      console.log(`Transaction ${client_reference} marked SUCCESS`);
-    } else if (status === "failed") {
-      await db.query("UPDATE transactions SET status = 'failed' WHERE id = ?", [transaction.id]);
-      await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [transaction.amount, transaction.user_id]);
-      console.log(`Transaction ${client_reference} FAILED and refunded`);
-    }
-
-    return res.json({ success: true, message: "Webhook processed" });
-
-  } catch (error) {
-    console.error("Webhook error:", error);
-    return res.status(500).json({ success: false, message: "Error processing webhook", error: error.message });
   }
 });
 
