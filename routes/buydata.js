@@ -2,11 +2,12 @@
 
 const express = require("express");
 const axios = require("axios");
+const qs = require("qs");
 const db = require("../config/db"); // MySQL connection
 const router = express.Router();
 
 const BASE_URL = "https://easyaccessapi.com.ng/api/data.php";
-const API_TOKEN = process.env.EASY_ACCESS_TOKEN; // Use ENV for security
+const API_TOKEN = process.env.EASY_ACCESS_TOKEN; // ENV for security
 
 /**
  * POST /buydata
@@ -17,11 +18,6 @@ router.post("/", async (req, res) => {
 
   if (!user_id || !network || !mobile_no || !dataplan) {
     return res.status(400).json({ success: false, message: "Missing required fields" });
-  }
-
-  // ✅ Validate mobile number
-  if (!/^\d{11}$/.test(mobile_no)) {
-    return res.status(400).json({ success: false, message: "Mobile number must be 11 digits" });
   }
 
   try {
@@ -93,25 +89,31 @@ router.post("/", async (req, res) => {
       ]
     );
 
-    // 5️⃣ Call EasyAccess API using form-urlencoded
-    const params = new URLSearchParams();
-    params.append("network", network);
-    params.append("mobileno", mobile_no);
-    params.append("dataplan", dataplan);
-    params.append("client_reference", reference);
-    params.append("max_amount_payable", price.toString());
-    params.append("webhook_url", "https://polexvtu-backend-production.up.railway.app/buydata/webhook");
-
-    const response = await axios.post(BASE_URL, params.toString(), {
-      headers: {
-        "AuthorizationToken": API_TOKEN,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
+    // 5️⃣ Prepare EasyAccess API request
+    const data = qs.stringify({
+      network,
+      mobileno: mobile_no,
+      dataplan,
+      client_reference: reference,
+      max_amount_payable: price.toString(),
+      webhook_url: "https://polexvtu-backend-production.up.railway.app/buydata/webhook"
     });
 
-    console.log("EasyAccess API response:", response.data);
+    const config = {
+      method: "post",
+      url: BASE_URL,
+      headers: {
+        AuthorizationToken: API_TOKEN,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "cache-control": "no-cache"
+      },
+      data
+    };
 
-    // 6️⃣ Optionally update api_amount if returned
+    // 6️⃣ Send request to EasyAccess
+    const response = await axios(config);
+
+    // 7️⃣ Update transaction with api_amount if returned
     if (response.data?.amount) {
       await db.query("UPDATE transactions SET api_amount = ? WHERE reference = ?", [
         response.data.amount,
@@ -119,10 +121,9 @@ router.post("/", async (req, res) => {
       ]);
     }
 
-    // 7️⃣ Return response to client
     return res.json({
       success: true,
-      message: "Purchase initiated. Awaiting EasyAccess confirmation via webhook.",
+      message: "Purchase initiated",
       reference,
       user_id: user.id,
       amount: price,
@@ -135,10 +136,6 @@ router.post("/", async (req, res) => {
 
   } catch (error) {
     console.error("Buy data error:", error);
-
-    // Optional: refund in case of error before webhook
-    // await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [price, user_id]);
-
     return res.status(500).json({
       success: false,
       message: "Error purchasing data",
@@ -171,7 +168,6 @@ router.post("/webhook", async (req, res) => {
       await db.query("UPDATE transactions SET status = 'success' WHERE id = ?", [transaction.id]);
     } else if (status === "failed") {
       await db.query("UPDATE transactions SET status = 'failed' WHERE id = ?", [transaction.id]);
-      // Refund user balance if transaction failed
       await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [transaction.amount, transaction.user_id]);
     }
 
