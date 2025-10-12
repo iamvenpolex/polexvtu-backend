@@ -11,6 +11,7 @@ const adminRoutes = require("./routes/admin");
 const withdrawRoutes = require("./routes/withdraw");
 const transactionRoutes = require("./routes/transaction");
 const vtuRoutes = require("./routes/vtu"); // 👈 Add this line
+const buyDataRoutes = require("./routes/buydata"); 
 
 
 
@@ -52,6 +53,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/withdraw", withdrawRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/vtu", vtuRoutes); // 👈 Add this line
+app.use("/api/buydata", buyDataRoutes);            // 👈 mount route
 
 
 // ✅ Root + Health check
