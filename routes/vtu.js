@@ -8,11 +8,13 @@ const BASE_URL = "https://easyaccessapi.com.ng/api";
 
 /**
  * GET /plans/:product_type
+ * Returns EA price (static) + custom price (editable)
  */
 router.get("/plans/:product_type", async (req, res) => {
   const { product_type } = req.params;
 
   try {
+    // Fetch plans from EasyAccess API
     const response = await axios.get(
       `${BASE_URL}/get_plans.php?product_type=${product_type}`,
       {
@@ -30,7 +32,7 @@ router.get("/plans/:product_type", async (req, res) => {
       response.data?.ETISALAT ||
       [];
 
-    // ✅ FIXED TABLE NAME
+    // Fetch custom prices from DB
     const [priceRows] = await db.query(
       "SELECT plan_id, custom_price, status FROM custom_data_prices WHERE product_type = ?",
       [product_type]
@@ -38,21 +40,25 @@ router.get("/plans/:product_type", async (req, res) => {
 
     const priceMap = {};
     priceRows.forEach((p) => {
-      if (p.status === "active" && p.custom_price) {
+      if (p.status === "active" && p.custom_price != null) {
         priceMap[p.plan_id] = p.custom_price;
       }
     });
 
-    const plansWithPrice = apiPlans.map((p) => ({
-      ...p,
-      price: priceMap[p.plan_id] || p.price || 0,
+    // Map plans, keeping EA price static
+    const plansWithCustomPrice = apiPlans.map((p) => ({
+      plan_id: p.plan_id,
+      name: p.name,
+      price: p.price, // EA price from API (static)
+      validity: p.validity,
+      custom_price: priceMap[p.plan_id] ?? undefined, // only editable
     }));
 
     return res.json({
       success: true,
       message: "Plans loaded successfully",
       product_type,
-      plans: plansWithPrice,
+      plans: plansWithCustomPrice,
     });
   } catch (error) {
     console.error("Fetch plans error:", error.message);
@@ -66,6 +72,7 @@ router.get("/plans/:product_type", async (req, res) => {
 
 /**
  * POST /plans/custom-price
+ * Save or update only the custom price
  */
 router.post("/plans/custom-price", async (req, res) => {
   const { product_type, plan_id, plan_name, custom_price, status } = req.body;
@@ -78,18 +85,20 @@ router.post("/plans/custom-price", async (req, res) => {
   }
 
   try {
-    // ✅ FIXED TABLE NAME
+    // Check if custom price already exists
     const [existing] = await db.query(
       "SELECT id FROM custom_data_prices WHERE product_type = ? AND plan_id = ?",
       [product_type, plan_id]
     );
 
     if (existing.length > 0) {
+      // Update only the custom price and status
       await db.query(
         "UPDATE custom_data_prices SET custom_price = ?, status = ? WHERE id = ?",
         [custom_price, status || "active", existing[0].id]
       );
     } else {
+      // Insert new row, EA price is stored separately (can be 0 if not needed)
       await db.query(
         "INSERT INTO custom_data_prices (product_type, plan_id, plan_name, api_price, custom_price, status) VALUES (?, ?, ?, ?, ?, ?)",
         [product_type, plan_id, plan_name, 0, custom_price, status || "active"]
