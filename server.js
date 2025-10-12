@@ -11,7 +11,7 @@ const adminRoutes = require("./routes/admin");
 const withdrawRoutes = require("./routes/withdraw");
 const transactionRoutes = require("./routes/transaction");
 const vtuRoutes = require("./routes/vtu"); // 👈 Add this line
-const planRoutes = require("./routes/plan")
+
 
 
 const app = express();
@@ -52,7 +52,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/withdraw", withdrawRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/vtu", vtuRoutes); // 👈 Add this line
-app.use("/api/plan", planRoutes);
+
 
 // ✅ Root + Health check
 app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));
