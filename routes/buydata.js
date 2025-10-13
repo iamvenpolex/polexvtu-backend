@@ -7,7 +7,7 @@ const router = express.Router();
 
 const BASE_URL = "https://easyaccessapi.com.ng/api/data.php";
 const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
-const WEBHOOK_URL = process.env.EA_WEBHOOK_URL || "https://YOUR_DEPLOYED_BACKEND_URL/buydata/webhook";
+const WEBHOOK_URL = process.env.EA_WEBHOOK_URL || "https://polexvtu-backend-production.up.railway.app/buydata/webhook";
 
 /**
  * POST /buydata
