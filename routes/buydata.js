@@ -20,6 +20,7 @@ const WEBHOOK_URL = process.env.EA_WEBHOOK_URL || `${process.env.BACKEND_URL}/ap
  * Pricing model: use custom_price if set; otherwise use EA price
  */
 router.post("/", protect, async (req, res) => {
+  console.log("📩 Incoming Buy Data Request:", req.body);
   const { network, mobile_no, dataplan, client_reference } = req.body;
   const user_id = req.user?.id;
 
