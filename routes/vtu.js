@@ -43,13 +43,13 @@ router.get("/plans/:product_type", async (req, res) => {
     let eaResponse;
     try {
       eaResponse = await axios.get(`${BASE_URL}/get_plans.php?product_type=${encodeURIComponent(product_type)}`, {
-        headers: { AuthorizationToken: API_TOKEN },
+        headers: { Authorization: API_TOKEN },
         timeout: 15000,
       });
     } catch (err) {
       // fallback: fetch all data plans and filter later (still useful)
       eaResponse = await axios.get(`${BASE_URL}/get_plans.php?product_type=data`, {
-        headers: { AuthorizationToken: API_TOKEN },
+        headers: { Authorization: API_TOKEN },
         timeout: 15000,
       });
     }
