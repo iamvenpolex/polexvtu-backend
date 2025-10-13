@@ -14,10 +14,8 @@ const WEBHOOK_URL = process.env.EA_WEBHOOK_URL || "https://polexvtu-backend-prod
 
 /**
  * POST /api/buydata
- * Protected - uses middleware/authMiddleware.js -> protect
  * Body: { network, mobile_no, dataplan, client_reference }
- * - network: "01"|"02"|"03"|"04"
- * - dataplan: plan_id from EA/custom_data_prices
+ * Protected
  */
 router.post("/", protect, async (req, res) => {
   const { network, mobile_no, dataplan, client_reference } = req.body;
@@ -26,7 +24,6 @@ router.post("/", protect, async (req, res) => {
   if (!user_id || !network || !mobile_no || !dataplan || !client_reference) {
     return res.status(400).json({ success: false, message: "Missing required fields" });
   }
-
   if (!/^\d{11}$/.test(mobile_no)) {
     return res.status(400).json({ success: false, message: "Mobile number must be 11 digits" });
   }
@@ -37,53 +34,51 @@ router.post("/", protect, async (req, res) => {
     if (!users.length) return res.status(404).json({ success: false, message: "User not found" });
     const user = users[0];
 
-    // fetch custom price for dataplan
+    // fetch plan from DB
     const [planRows] = await db.query(
-      "SELECT product_type, plan_id, plan_name, custom_price FROM custom_data_prices WHERE plan_id = ? AND status = 'active' LIMIT 1",
+      "SELECT product_type, plan_id, plan_name, custom_price, status FROM custom_data_prices WHERE plan_id = ? LIMIT 1",
       [dataplan]
     );
-    if (!planRows.length) return res.status(400).json({ success: false, message: "Plan not available" });
+    if (!planRows.length) return res.status(400).json({ success: false, message: "Plan not available in DB" });
     const plan = planRows[0];
+    if (plan.status !== "active") return res.status(400).json({ success: false, message: "Plan is inactive" });
+
     const customPrice = Number(plan.custom_price ?? 0);
 
-    // fetch EA price (we fetch all data plans and find the dataplan)
+    // idempotency: check existing transaction with same reference
+    const [existingTx] = await db.query("SELECT id, status FROM transactions WHERE reference = ? LIMIT 1", [client_reference]);
+    if (existingTx.length) {
+      return res.status(409).json({ success: false, message: "Reference already processed", reference: client_reference });
+    }
+
+    // verify plan exists on EasyAccess (fetch EA data plans and find)
     const eaRes = await axios.get(`${EA_BASE}/get_plans.php?product_type=data`, {
       headers: { AuthorizationToken: API_TOKEN },
       timeout: 15000,
     });
-
-    const allPlans = [
-      ...(eaRes.data?.MTN || []),
-      ...(eaRes.data?.GLO || []),
-      ...(eaRes.data?.AIRTEL || []),
-      ...(eaRes.data?.ETISALAT || []),
-    ];
-
-    const eaPlan = allPlans.find((p) => String(p.plan_id) === String(dataplan));
-    if (!eaPlan) return res.status(400).json({ success: false, message: "Plan not found on EasyAccess" });
+    const allEa = [...(eaRes.data?.MTN || []), ...(eaRes.data?.GLO || []), ...(eaRes.data?.AIRTEL || []), ...(eaRes.data?.ETISALAT || [])];
+    const eaPlan = allEa.find((p) => String(p.plan_id) === String(dataplan));
+    if (!eaPlan) {
+      // mark DB plan inactive to avoid future attempts
+      await db.query("UPDATE custom_data_prices SET status = 'inactive' WHERE plan_id = ? AND product_type = ?", [dataplan, plan.product_type]);
+      return res.status(400).json({ success: false, message: "Plan not found on EasyAccess. We've disabled it in the admin list." });
+    }
     const eaPrice = Number(eaPlan.amount ?? eaPlan.price ?? 0);
 
-    // check balance
+    // check user balance
     if (Number(user.balance) < customPrice) {
       return res.status(400).json({ success: false, message: "Insufficient balance", user_balance: user.balance });
     }
 
-    // idempotency check: ensure we haven't processed this client_reference already
-    const [existing] = await db.query("SELECT id, status FROM transactions WHERE reference = ? LIMIT 1", [client_reference]);
-    if (existing.length) {
-      return res.status(409).json({ success: false, message: "Reference already processed", reference: client_reference });
-    }
-
-    // deduct wallet
+    // deduct wallet (idempotent because we checked transaction above)
     const balance_before = Number(user.balance);
     const balance_after = balance_before - customPrice;
     await db.query("UPDATE users SET balance = ? WHERE id = ?", [balance_after, user.id]);
 
-    // insert transaction into existing transactions table
+    // insert transaction
     await db.query(
-      `INSERT INTO transactions
-        (user_id, reference, type, amount, api_amount, status, network, plan, phone, via, description, balance_before, balance_after, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      `INSERT INTO transactions (user_id, reference, type, amount, api_amount, status, network, plan, phone, via, description, balance_before, balance_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         user.id,
         client_reference,
@@ -101,7 +96,7 @@ router.post("/", protect, async (req, res) => {
       ]
     );
 
-    // call EasyAccess using EA price as max_amount_payable
+    // call EA with eaPrice as max_amount_payable
     const params = new URLSearchParams();
     params.append("network", network);
     params.append("mobileno", mobile_no);
@@ -115,14 +110,14 @@ router.post("/", protect, async (req, res) => {
       timeout: 20000,
     });
 
-    // update api_amount if EA returned immediate amount
+    // update api_amount if returned
     if (eaPost.data?.amount) {
       await db.query("UPDATE transactions SET api_amount = ? WHERE reference = ?", [Number(eaPost.data.amount), client_reference]);
     }
 
     return res.json({
       success: true,
-      message: "Purchase initiated. Awaiting EasyAccess confirmation via webhook.",
+      message: "Purchase initiated. Awaiting EasyAccess webhook confirmation.",
       reference: client_reference,
       user_id: user.id,
       amount: customPrice,
@@ -140,8 +135,8 @@ router.post("/", protect, async (req, res) => {
 
 /**
  * POST /api/buydata/webhook
- * EA will POST updates here. Update transactions.status and api_amount.
- * Note: adapt parsing if EA payload differs.
+ * EA webhook handler - updates transactions status + api_amount.
+ * If EA indicates a refund was processed, credit the user's wallet (idempotent).
  */
 router.post("/webhook", express.json(), async (req, res) => {
   try {
@@ -149,20 +144,32 @@ router.post("/webhook", express.json(), async (req, res) => {
     const ref = payload.client_reference || payload.clientReference || payload.reference;
     if (!ref) return res.status(400).send("missing reference");
 
-    // Map EA result to our status
-    let status = "pending";
+    // fetch existing transaction (we need its current status & amount & user_id)
+    const [txRows] = await db.query("SELECT id, user_id, amount, status FROM transactions WHERE reference = ? LIMIT 1", [ref]);
+    if (!txRows.length) {
+      console.warn("webhook: transaction not found for reference", ref);
+      return res.status(404).send("tx not found");
+    }
+    const tx = txRows[0];
+    const prevStatus = tx.status;
+    const txAmount = Number(tx.amount ?? 0);
+    const userId = tx.user_id;
+
+    // derive new status from payload
+    let newStatus = "pending";
     const successRaw = String(payload.success ?? payload.status ?? "").toLowerCase();
-    if (successRaw === "true" || successRaw === "success") status = "success";
+    if (successRaw === "true" || successRaw === "success") newStatus = "success";
     else if (successRaw.startsWith("false")) {
-      status = payload.auto_refund_status === "processed" ? "refunded" : "failed";
-    } else if (payload.status === "failed") status = "failed";
+      newStatus = payload.auto_refund_status === "processed" ? "refunded" : "failed";
+    } else if (payload.status === "failed") newStatus = "failed";
 
     const apiAmount = payload.amount ? Number(payload.amount) : null;
 
+    // Update transaction row
     const updates = [];
     const params = [];
     updates.push("status = ?");
-    params.push(status);
+    params.push(newStatus);
 
     if (apiAmount != null) {
       updates.push("api_amount = ?");
@@ -175,7 +182,39 @@ router.post("/webhook", express.json(), async (req, res) => {
     const sql = `UPDATE transactions SET ${updates.join(", ")} WHERE reference = ?`;
     await db.query(sql, params);
 
-    // If refunded, you may implement refund credit logic here (not auto-implemented)
+    // If EA processed an auto-refund and transaction wasn't already refunded, credit user wallet
+    const isRefunded = newStatus === "refunded";
+    if (isRefunded && prevStatus !== "refunded") {
+      // Credit user's wallet (idempotent because we check prevStatus)
+      const [userRows] = await db.query("SELECT id, balance FROM users WHERE id = ? LIMIT 1", [userId]);
+      if (userRows.length) {
+        const user = userRows[0];
+        const newBalance = Number(user.balance) + txAmount;
+        await db.query("UPDATE users SET balance = ? WHERE id = ?", [newBalance, userId]);
+
+        // Insert a refund transaction row (audit)
+        const refundRef = `refund_${ref}_${Date.now()}`;
+        await db.query(
+          `INSERT INTO transactions (user_id, reference, type, amount, api_amount, status, network, plan, phone, via, description, balance_before, balance_after, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            userId,
+            refundRef,
+            "refund",
+            txAmount,
+            apiAmount ?? 0,
+            "success",
+            null,
+            null,
+            null,
+            "auto_refund",
+            `Auto refund for reference ${ref}`,
+            Number(user.balance),
+            newBalance,
+          ]
+        );
+      }
+    }
 
     return res.status(200).send("OK");
   } catch (err) {
