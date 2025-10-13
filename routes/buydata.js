@@ -14,8 +14,10 @@ const WEBHOOK_URL = process.env.EA_WEBHOOK_URL || "https://polexvtu-backend-prod
 
 /**
  * POST /api/buydata
- * Protected route: expects Authorization: Bearer <jwt>
+ * Protected - uses middleware/authMiddleware.js -> protect
  * Body: { network, mobile_no, dataplan, client_reference }
+ * - network: "01"|"02"|"03"|"04"
+ * - dataplan: plan_id from EA/custom_data_prices
  */
 router.post("/", protect, async (req, res) => {
   const { network, mobile_no, dataplan, client_reference } = req.body;
@@ -24,6 +26,7 @@ router.post("/", protect, async (req, res) => {
   if (!user_id || !network || !mobile_no || !dataplan || !client_reference) {
     return res.status(400).json({ success: false, message: "Missing required fields" });
   }
+
   if (!/^\d{11}$/.test(mobile_no)) {
     return res.status(400).json({ success: false, message: "Mobile number must be 11 digits" });
   }
@@ -34,30 +37,49 @@ router.post("/", protect, async (req, res) => {
     if (!users.length) return res.status(404).json({ success: false, message: "User not found" });
     const user = users[0];
 
-    // fetch plan details (custom price) from DB by plan_id (product_type stored in table as product_type)
-    const [planRows] = await db.query("SELECT product_type, plan_id, plan_name, custom_price FROM custom_data_prices WHERE plan_id = ? AND status = 'active' LIMIT 1", [dataplan]);
+    // fetch custom price for dataplan
+    const [planRows] = await db.query(
+      "SELECT product_type, plan_id, plan_name, custom_price FROM custom_data_prices WHERE plan_id = ? AND status = 'active' LIMIT 1",
+      [dataplan]
+    );
     if (!planRows.length) return res.status(400).json({ success: false, message: "Plan not available" });
     const plan = planRows[0];
     const customPrice = Number(plan.custom_price ?? 0);
 
-    // fetch EA price for the dataplan (get all data plans and find dataplan)
-    const eaRes = await axios.get(`${EA_BASE}/get_plans.php?product_type=data`, { headers: { AuthorizationToken: API_TOKEN }, timeout: 15000 });
-    const allPlans = [ ...(eaRes.data.MTN || []), ...(eaRes.data.GLO || []), ...(eaRes.data.AIRTEL || []), ...(eaRes.data.ETISALAT || []) ];
-    const eaPlan = allPlans.find(p => String(p.plan_id) == String(dataplan));
+    // fetch EA price (we fetch all data plans and find the dataplan)
+    const eaRes = await axios.get(`${EA_BASE}/get_plans.php?product_type=data`, {
+      headers: { AuthorizationToken: API_TOKEN },
+      timeout: 15000,
+    });
+
+    const allPlans = [
+      ...(eaRes.data?.MTN || []),
+      ...(eaRes.data?.GLO || []),
+      ...(eaRes.data?.AIRTEL || []),
+      ...(eaRes.data?.ETISALAT || []),
+    ];
+
+    const eaPlan = allPlans.find((p) => String(p.plan_id) === String(dataplan));
     if (!eaPlan) return res.status(400).json({ success: false, message: "Plan not found on EasyAccess" });
     const eaPrice = Number(eaPlan.amount ?? eaPlan.price ?? 0);
 
-    // ensure user has enough wallet balance (based on customPrice)
+    // check balance
     if (Number(user.balance) < customPrice) {
       return res.status(400).json({ success: false, message: "Insufficient balance", user_balance: user.balance });
     }
 
-    // Deduct wallet (idempotency note: client_reference should be unique; you can check for existing tx before deducting)
+    // idempotency check: ensure we haven't processed this client_reference already
+    const [existing] = await db.query("SELECT id, status FROM transactions WHERE reference = ? LIMIT 1", [client_reference]);
+    if (existing.length) {
+      return res.status(409).json({ success: false, message: "Reference already processed", reference: client_reference });
+    }
+
+    // deduct wallet
     const balance_before = Number(user.balance);
     const balance_after = balance_before - customPrice;
     await db.query("UPDATE users SET balance = ? WHERE id = ?", [balance_after, user.id]);
 
-    // Insert transaction into your existing `transactions` table (you said you already have it)
+    // insert transaction into existing transactions table
     await db.query(
       `INSERT INTO transactions
         (user_id, reference, type, amount, api_amount, status, network, plan, phone, via, description, balance_before, balance_after, created_at)
@@ -79,7 +101,7 @@ router.post("/", protect, async (req, res) => {
       ]
     );
 
-    // Send request to EA using EA price as max_amount_payable (eaPrice)
+    // call EasyAccess using EA price as max_amount_payable
     const params = new URLSearchParams();
     params.append("network", network);
     params.append("mobileno", mobile_no);
@@ -93,7 +115,7 @@ router.post("/", protect, async (req, res) => {
       timeout: 20000,
     });
 
-    // If EA returns amount immediately, update transaction.api_amount
+    // update api_amount if EA returned immediate amount
     if (eaPost.data?.amount) {
       await db.query("UPDATE transactions SET api_amount = ? WHERE reference = ?", [Number(eaPost.data.amount), client_reference]);
     }
@@ -118,8 +140,8 @@ router.post("/", protect, async (req, res) => {
 
 /**
  * POST /api/buydata/webhook
- * EasyAccess will POST updates here. This handler updates the transactions table status + api_amount.
- * Note: EA webhook payload shape may vary; adapt parsing as needed.
+ * EA will POST updates here. Update transactions.status and api_amount.
+ * Note: adapt parsing if EA payload differs.
  */
 router.post("/webhook", express.json(), async (req, res) => {
   try {
@@ -127,18 +149,16 @@ router.post("/webhook", express.json(), async (req, res) => {
     const ref = payload.client_reference || payload.clientReference || payload.reference;
     if (!ref) return res.status(400).send("missing reference");
 
-    // Map EA success -> our status
+    // Map EA result to our status
     let status = "pending";
     const successRaw = String(payload.success ?? payload.status ?? "").toLowerCase();
     if (successRaw === "true" || successRaw === "success") status = "success";
     else if (successRaw.startsWith("false")) {
-      // false_disabled etc — treat as failed; if auto_refund_status indicates refunded, set refunded
-      status = (payload.auto_refund_status === "processed" || payload.auto_refund_status === "processed") ? "refunded" : "failed";
+      status = payload.auto_refund_status === "processed" ? "refunded" : "failed";
     } else if (payload.status === "failed") status = "failed";
 
     const apiAmount = payload.amount ? Number(payload.amount) : null;
 
-    // Update transaction row
     const updates = [];
     const params = [];
     updates.push("status = ?");
@@ -150,18 +170,16 @@ router.post("/webhook", express.json(), async (req, res) => {
     }
 
     updates.push("updated_at = NOW()");
-
-    const sql = `UPDATE transactions SET ${updates.join(", ")} WHERE reference = ?`;
     params.push(ref);
 
+    const sql = `UPDATE transactions SET ${updates.join(", ")} WHERE reference = ?`;
     await db.query(sql, params);
 
-    // If EA indicates auto_refund_status = processed and transaction was deducted earlier, you may handle refunds here.
-    // (Implementation omitted — do not auto-credit without idempotent checks.)
+    // If refunded, you may implement refund credit logic here (not auto-implemented)
 
     return res.status(200).send("OK");
   } catch (err) {
-    console.error("webhook handler error:", err);
+    console.error("webhook error:", err);
     return res.status(500).send("Error");
   }
 });
