@@ -1,103 +1,84 @@
-"use strict";
-
 const express = require("express");
 const axios = require("axios");
-const db = require("../config/db"); // MySQL connection
+const db = require("../config/db");
 const router = express.Router();
 
-const API_TOKEN = process.env.EASY_ACCESS_TOKEN || "YOUR_EASYACCESS_TOKEN";
-const BASE_URL = "https://easyaccessapi.com.ng/api";
+const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
+const VERIFY_URL = "https://easyaccessapi.com.ng/api/verifytv.php";
+const PAY_URL = "https://easyaccessapi.com.ng/api/paytv.php";
 
 /**
- * POST /buycabletv/verify
- * Verify IUC / Smart Card number
- * Required: company_code, iuc
+ * POST /buycabletv
+ * Body: { user_id, company_code, package_code, iuc_no, client_reference }
  */
-router.post("/verify", async (req, res) => {
-  const { company_code, iuc } = req.body;
+router.post("/", async (req, res) => {
+  const { user_id, company_code, package_code, iuc_no, client_reference } = req.body;
 
-  if (!company_code || !iuc) {
-    return res.status(400).json({
-      success: false,
-      message: "Company code and IUC number are required",
-    });
+  if (!user_id || !company_code || !package_code || !iuc_no || !client_reference) {
+    return res.status(400).json({ success: false, message: "Missing required fields" });
   }
 
   try {
-    const formData = new URLSearchParams();
-    formData.append("company", company_code);
-    formData.append("iucno", iuc);
+    // 1️⃣ Verify IUC/Smart Card
+    const verifyRes = await axios.post(
+      VERIFY_URL,
+      { company: company_code, iucno: iuc_no },
+      { headers: { AuthorizationToken: API_TOKEN } }
+    );
 
-    const response = await axios.post(`${BASE_URL}/verifytv.php`, formData, {
-      headers: {
-        AuthorizationToken: API_TOKEN,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    });
-
-    if (!response.data.success) {
-      return res.status(400).json({
-        success: false,
-        message: response.data.message || "IUC verification failed",
-      });
+    if (!verifyRes.data.success) {
+      return res.status(400).json({ success: false, message: verifyRes.data.message });
     }
 
-    // Return only customer name
-    const customerName = response.data.message?.content?.Customer_Name || null;
+    const customerName = verifyRes.data.message.content.Customer_Name;
 
-    return res.json({
-      success: true,
-      message: "IUC verified successfully",
-      customer_name: customerName,
-      full_response: response.data.message,
-    });
-  } catch (err) {
-    console.error("Verify IUC error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Error verifying IUC",
-      error: err.message,
-    });
-  }
-});
+    // 2️⃣ Fetch user & plan
+    const [users] = await db.query("SELECT id, balance FROM users WHERE id = ?", [user_id]);
+    if (!users.length) return res.status(404).json({ success: false, message: "User not found" });
+    const user = users[0];
 
-/**
- * POST /buycabletv/pay
- * Purchase cable TV subscription
- * Required: company_code, iuc, package_code, max_amount_payable
- */
-router.post("/pay", async (req, res) => {
-  const { company_code, iuc, package_code, max_amount_payable } = req.body;
+    const [plans] = await db.query(
+      "SELECT package_name, custom_price FROM custom_cabletv_prices WHERE company_code=? AND package_code=? AND status='active'",
+      [company_code, package_code]
+    );
+    if (!plans.length) return res.status(400).json({ success: false, message: "Plan not available" });
+    const plan = plans[0];
 
-  if (!company_code || !iuc || !package_code || !max_amount_payable) {
-    return res.status(400).json({
-      success: false,
-      message: "All fields are required",
-    });
-  }
+    // 3️⃣ Check user balance
+    const price = parseFloat(plan.custom_price);
+    if (user.balance < price) return res.status(400).json({ success: false, message: "Insufficient balance" });
 
-  try {
-    const formData = new URLSearchParams();
-    formData.append("company", company_code);
-    formData.append("iucno", iuc);
-    formData.append("package", package_code);
-    formData.append("max_amount_payable", max_amount_payable.toString());
+    // 4️⃣ Deduct balance and create pending transaction
+    const balance_before = parseFloat(user.balance);
+    const balance_after = balance_before - price;
+    await db.query("UPDATE users SET balance=? WHERE id=?", [balance_after, user.id]);
 
-    const response = await axios.post(`${BASE_URL}/paytv.php`, formData, {
-      headers: {
-        AuthorizationToken: API_TOKEN,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    });
+    await db.query(
+      `INSERT INTO transactions
+        (user_id, reference, type, amount, status, plan, phone, via, description, balance_before, balance_after)
+       VALUES (?, ?, 'cabletv', ?, 'pending', ?, ?, 'wallet', ?, ?, ?)`,
+      [user.id, client_reference, price, plan.package_name, iuc_no, `Cable TV purchase of ${plan.package_name}`, balance_before, balance_after]
+    );
 
-    return res.json(response.data);
-  } catch (err) {
-    console.error("Pay cable TV error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Error processing cable TV subscription",
-      error: err.message,
-    });
+    // 5️⃣ Call EasyAccess Pay API
+    const payRes = await axios.post(
+      PAY_URL,
+      { company: company_code, iucno: iuc_no, package: package_code, max_amount_payable: price },
+      { headers: { AuthorizationToken: API_TOKEN } }
+    );
+
+    if (payRes.data.success) {
+      await db.query("UPDATE transactions SET status='success' WHERE reference=?", [client_reference]);
+      return res.json({ success: true, message: "Purchase successful", customerName, amount: price });
+    } else {
+      // Refund wallet
+      await db.query("UPDATE users SET balance=? WHERE id=?", [balance_before, user.id]);
+      await db.query("UPDATE transactions SET status='failed' WHERE reference=?", [client_reference]);
+      return res.status(400).json({ success: false, message: payRes.data.message });
+    }
+  } catch (error) {
+    console.error("Buy Cable TV error:", error.message);
+    return res.status(500).json({ success: false, message: "Error purchasing Cable TV", error: error.message });
   }
 });
 
