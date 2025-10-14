@@ -14,7 +14,9 @@ router.post("/verify", async (req, res) => {
     const { company, iucno } = req.body;
 
     if (!company || !iucno) {
-      return res.status(400).json({ success: false, message: "Missing company or IUC number" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing company or IUC number" });
     }
 
     const data = new FormData();
@@ -25,10 +27,21 @@ router.post("/verify", async (req, res) => {
       headers: { AuthorizationToken: EASY_ACCESS_TOKEN, ...data.getHeaders() },
     });
 
-    res.json({ success: true, data: response.data });
+    // Normalize EasyAccess response
+    const eaData = response.data?.data || {};
+    res.json({
+      success: true,
+      data: {
+        account_name: eaData.account_name || "N/A",
+        status: eaData.status || "N/A",
+        ...eaData, // Include any additional fields from EA
+      },
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Failed to verify TV subscription" });
+    console.error(error.response?.data || error.message);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to verify TV subscription" });
   }
 });
 
@@ -39,7 +52,9 @@ router.post("/buy", async (req, res) => {
     const { company, iucno, packageId } = req.body;
 
     if (!company || !iucno || !packageId) {
-      return res.status(400).json({ success: false, message: "All fields are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "All fields are required" });
     }
 
     // Get custom price from DB
@@ -50,7 +65,9 @@ router.post("/buy", async (req, res) => {
 
     const maxAmountPayable = rows.length > 0 ? rows[0].custom_price : null;
     if (!maxAmountPayable) {
-      return res.status(400).json({ success: false, message: "Custom price not set by admin" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Custom price not set by admin" });
     }
 
     const data = new FormData();
@@ -65,7 +82,7 @@ router.post("/buy", async (req, res) => {
 
     res.json({ success: true, data: response.data });
   } catch (error) {
-    console.error(error);
+    console.error(error.response?.data || error.message);
     res.status(500).json({ success: false, message: "Purchase failed" });
   }
 });
