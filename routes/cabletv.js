@@ -5,10 +5,10 @@ const router = express.Router();
 const EASY_ACCESS_TOKEN = process.env.EASY_ACCESS_TOKEN; // Your EasyAccess token
 const BASE_URL = "https://easyaccessapi.com.ng/api";
 
-// Fetch Cable TV Plans
+// GET /api/cabletv/:company
 router.get("/:company", async (req, res) => {
   try {
-    const { company } = req.params; // e.g., dstv, gotv, startimes, showmax
+    const { company } = req.params; // dstv, gotv, startimes, showmax
     const response = await axios.get(`${BASE_URL}/get_plans.php?product_type=${company}`, {
       headers: {
         AuthorizationToken: EASY_ACCESS_TOKEN,
@@ -16,7 +16,7 @@ router.get("/:company", async (req, res) => {
       },
     });
 
-    // Return JSON response with plans
+    // Send plans in JSON
     res.json({
       success: true,
       plans: response.data[company.toUpperCase()],
