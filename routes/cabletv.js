@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 
-// Get TV plans dynamically
+// GET TV plans dynamically
 router.get("/plans", async (req, res) => {
   const { product_type } = req.query;
   if (!product_type) return res.status(400).json({ message: "product_type is required" });
@@ -18,10 +18,16 @@ router.get("/plans", async (req, res) => {
       }
     );
 
-    const plans = response.data.message || response.data;
+    let plans = response.data.message || response.data;
+
+    // Normalize to array
+    if (!Array.isArray(plans)) {
+      plans = Object.values(plans);
+    }
+
     res.json(plans);
   } catch (error) {
-    console.error(error.message);
+    console.error("Error fetching plans:", error.message);
     res.status(500).json({ message: "Failed to fetch plans" });
   }
 });
@@ -45,7 +51,7 @@ router.post("/verify", async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-    console.error(error.message);
+    console.error("Error verifying IUC:", error.message);
     res.status(500).json({ message: "Failed to verify IUC" });
   }
 });
@@ -69,7 +75,7 @@ router.post("/subscribe", async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-    console.error(error.message);
+    console.error("Error subscribing TV:", error.message);
     res.status(500).json({ message: "Failed to subscribe TV" });
   }
 });
