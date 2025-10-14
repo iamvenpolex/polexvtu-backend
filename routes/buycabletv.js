@@ -25,12 +25,11 @@ function makeClientRef() {
 // ---------- VERIFY TV ----------
 router.post("/verify", async (req, res) => {
   try {
-    let { company, iucno } = req.body;
+    const { company, iucno } = req.body;
     if (!company || !iucno) {
       return res.status(400).json({ success: false, message: "Missing company or IUC number" });
     }
 
-    // Accept either friendly name or numeric code
     const companyCode = (COMPANY_CODES[company.toLowerCase()] || company).toString();
 
     const data = new FormData();
@@ -46,11 +45,12 @@ router.post("/verify", async (req, res) => {
 
     console.log(`✅ EasyAccess VERIFY response:`, response.data);
 
-    // EA response content
+    // --- Return data in a clean format for frontend ---
     const content = response.data?.message?.content || {};
+    const successFlag = response.data?.success === "true" || response.data?.success === true;
 
     return res.json({
-      success: true,
+      success: successFlag,
       data: content,
       raw: response.data,
     });
@@ -70,7 +70,6 @@ router.post("/buy", async (req, res) => {
     }
 
     const companyCode = (COMPANY_CODES[rawCompany.toLowerCase()] || rawCompany).toString();
-
     connection = await db.getConnection();
 
     // Get custom price
@@ -87,7 +86,7 @@ router.post("/buy", async (req, res) => {
 
     const maxAmountPayable = Number(customRow.custom_price);
 
-    // Start DB transaction: lock user row, check balance, deduct
+    // Start transaction
     await connection.beginTransaction();
 
     const [userRows] = await connection.execute("SELECT id, balance FROM users WHERE id = ? FOR UPDATE", [user_id]);
@@ -162,7 +161,6 @@ router.post("/buy", async (req, res) => {
       console.log(`✅ EasyAccess BUY response [${client_reference}]:`, eaResponse);
     } catch (eaErr) {
       console.error(`❌ EasyAccess BUY request error [${client_reference}]:`, eaErr.response?.data || eaErr.message);
-      // Refund handling...
       await handleRefund(connection, user_id, maxAmountPayable, txReference, eaErr.response?.data || eaErr.message);
       return res.status(500).json({ success: false, message: "Provider request failed, amount refunded" });
     }
