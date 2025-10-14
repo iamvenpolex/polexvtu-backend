@@ -7,27 +7,29 @@ const db = require("../config/db"); // your users/wallet table
 
 const EASYACCESS_TOKEN = process.env.EASY_ACCESS_TOKEN;
 
-// POST /api/electricity/pay
+// --------------------- PAY ELECTRICITY ---------------------
 router.post("/pay", async (req, res) => {
   try {
     const { user_id, company, metertype, meterno, amount } = req.body;
 
-    // Validate input
-    if (!user_id || !company || !metertype || !meterno || !amount)
+    if (!user_id || !company || !metertype || !meterno || !amount) {
       return res.status(400).json({ success: false, message: "Required fields missing" });
+    }
 
-    if (amount < 1000)
+    if (amount < 1000) {
       return res.status(400).json({ success: false, message: "Minimum amount is ₦1000" });
+    }
 
     // Check wallet balance
     const [user] = await db.execute("SELECT balance FROM users WHERE id = ?", [user_id]);
-    if (!user || user[0].balance < amount)
+    if (!user || user[0].balance < amount) {
       return res.status(400).json({ success: false, message: "Insufficient wallet balance" });
+    }
 
     // Deduct from wallet
     await db.execute("UPDATE users SET balance = balance - ? WHERE id = ?", [amount, user_id]);
 
-    // Call EasyAccess API
+    // Call EasyAccess Pay API
     const response = await axios.post(
       "https://easyaccessapi.com.ng/api/payelectricity.php",
       { company, metertype, meterno, amount },
@@ -35,15 +37,13 @@ router.post("/pay", async (req, res) => {
     );
 
     const data = response.data;
+
+    console.log("EasyAccess PAY API Response:", JSON.stringify(data, null, 2));
+
     const success = data.success === true || data.success === "true";
 
     if (success) {
-      // Extract token depending on company
-      const token =
-        data.message.token ||
-        data.message.mainToken ||
-        data.message.Token ||
-        null;
+      const token = data.message.token || data.message.mainToken || data.message.Token || null;
 
       return res.json({
         success: true,
@@ -58,11 +58,69 @@ router.post("/pay", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: data.message || "Transaction failed",
+        full_response: data,
       });
     }
   } catch (err) {
     console.error("Electricity pay error:", err.response?.data || err.message);
-    return res.status(500).json({ success: false, message: "Internal Server Error" });
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+      error: err.response?.data || err.message,
+    });
+  }
+});
+
+// --------------------- VERIFY ELECTRICITY ---------------------
+router.post("/verify", async (req, res) => {
+  try {
+    const { company, metertype, meterno, amount } = req.body;
+
+    if (!company || !metertype || !meterno || !amount) {
+      return res.status(400).json({ success: false, message: "Required fields missing" });
+    }
+
+    if (amount < 1000) {
+      return res.status(400).json({ success: false, message: "Minimum amount is ₦1000" });
+    }
+
+    // Call EasyAccess Verify API
+    const response = await axios.post(
+      "https://easyaccessapi.com.ng/api/verifyelectricity.php",
+      { company, metertype, meterno, amount },
+      { headers: { AuthorizationToken: EASYACCESS_TOKEN, "Content-Type": "application/json" } }
+    );
+
+    const data = response.data;
+
+    console.log("EasyAccess VERIFY API Response:", JSON.stringify(data, null, 2));
+
+    const success = data.success === true || data.success === "true";
+
+    if (success) {
+      const customer_name = data.message.content?.Customer_Name || null;
+      return res.json({
+        success: true,
+        message: "Meter verified successfully",
+        customer_name,
+        full_response: data,
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: data.message || "Verification failed",
+        full_response: data,
+      });
+    }
+  } catch (err) {
+    console.error("Electricity verify error:", err.response?.data || err.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+      error: err.response?.data || err.message,
+    });
   }
 });
 
