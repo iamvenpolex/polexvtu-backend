@@ -18,29 +18,20 @@ router.put("/prices/:provider", async (req, res) => {
 
     const validProviders = ["waec", "neco", "nabteb", "nbais"];
     if (!validProviders.includes(provider)) {
-      console.log("[ADMIN] Invalid provider");
       return res.status(400).json({ success: false, message: "Invalid provider" });
     }
 
     const numericPrice = Number(price);
     if (isNaN(numericPrice)) {
-      console.log("[ADMIN] Price is not a number");
       return res.status(400).json({ success: false, message: "Price must be a number" });
     }
 
-    // upsert price
     const [rows] = await db.query("SELECT id FROM education_prices WHERE provider = ?", [provider]);
     if (rows.length === 0) {
-      await db.query(
-        "INSERT INTO education_prices (provider, price, updated_at) VALUES (?, ?, NOW())",
-        [provider, numericPrice]
-      );
+      await db.query("INSERT INTO education_prices (provider, price, updated_at) VALUES (?, ?, NOW())", [provider, numericPrice]);
       console.log(`[ADMIN] Inserted new price for ${provider}: ${numericPrice}`);
     } else {
-      await db.query(
-        "UPDATE education_prices SET price = ?, updated_at = NOW() WHERE provider = ?",
-        [numericPrice, provider]
-      );
+      await db.query("UPDATE education_prices SET price = ?, updated_at = NOW() WHERE provider = ?", [numericPrice, provider]);
       console.log(`[ADMIN] Updated price for ${provider}: ${numericPrice}`);
     }
 
@@ -56,9 +47,7 @@ router.put("/prices/:provider", async (req, res) => {
 // ----------------------
 router.get("/prices", async (req, res) => {
   try {
-    console.log("[FETCH] Fetching all education prices");
     const [rows] = await db.query("SELECT provider, price AS final_price FROM education_prices");
-    console.log("[FETCH] Prices fetched:", rows);
     return res.json({ success: true, data: rows });
   } catch (err) {
     console.error("GET /api/education/prices error:", err);
@@ -72,23 +61,30 @@ router.get("/prices", async (req, res) => {
 router.post("/buy/:provider", async (req, res) => {
   try {
     const { provider } = req.params;
+    const { user_id } = req.body;
+
     const validProviders = ["waec", "neco", "nabteb", "nbais"];
     if (!validProviders.includes(provider)) {
-      console.log("[BUY] Invalid provider:", provider);
       return res.status(400).json({ success: false, message: "Invalid provider" });
     }
 
-    // fetch admin-set price
-    const [rows] = await db.query("SELECT price FROM education_prices WHERE provider = ?", [provider]);
-    if (!rows.length) {
-      console.log("[BUY] Price not set by admin for provider:", provider);
-      return res.status(400).json({ success: false, message: "Price not set by admin" });
-    }
+    // Fetch admin-set price
+    const [priceRows] = await db.query("SELECT price FROM education_prices WHERE provider = ?", [provider]);
+    if (!priceRows.length) return res.status(400).json({ success: false, message: "Price not set by admin" });
 
-    const price = Number(rows[0].price);
-    console.log(`[BUY] Admin price for ${provider}: ${price}`);
+    const price = Number(priceRows[0].price);
 
-    // EasyAccess v1 GET endpoints
+    // Check user wallet
+    const [userRows] = await db.query("SELECT balance FROM users WHERE id = ?", [user_id]);
+    if (!userRows.length) return res.status(400).json({ success: false, message: "User not found" });
+
+    const userBalance = Number(userRows[0].balance);
+    if (userBalance < price) return res.status(400).json({ success: false, message: "Insufficient user balance" });
+
+    // Deduct user balance
+    await db.query("UPDATE users SET balance = balance - ? WHERE id = ?", [price, user_id]);
+
+    // Call EasyAccess API
     const endpointMap = {
       waec: "https://easyaccessapi.com.ng/api/waec.php",
       neco: "https://easyaccessapi.com.ng/api/neco.php",
@@ -96,25 +92,24 @@ router.post("/buy/:provider", async (req, res) => {
       nbais: "https://easyaccessapi.com.ng/api/nbais.php",
     };
 
-    console.log(`[BUY] Calling EasyAccess API for ${provider}...`);
-
     const response = await axios.get(endpointMap[provider], {
-      headers: {
-        AuthorizationToken: EASY_ACCESS_TOKEN,
-        "cache-control": "no-cache",
-      },
+      headers: { AuthorizationToken: EASY_ACCESS_TOKEN, "cache-control": "no-cache" },
       timeout: 10000,
     });
 
-    console.log(`[BUY] EasyAccess response for ${provider}:`, response.data);
+    // Handle EasyAccess response
+    let pin;
+    if (typeof response.data === "object" && response.data.success === "false") {
+      // Refund user
+      await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [price, user_id]);
+      return res.status(400).json({ success: false, message: response.data.message });
+    } else {
+      pin = response.data; // Plain text pin
+    }
 
-    // success: pin returned as plain text
-    return res.json({ success: true, provider, price, pin: response.data });
+    return res.json({ success: true, provider, price, pin });
   } catch (err) {
-    console.error(
-      "POST /api/education/buy/:provider error:",
-      err.response?.data || err.message || err
-    );
+    console.error("POST /api/education/buy/:provider error:", err.response?.data || err.message || err);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 });
