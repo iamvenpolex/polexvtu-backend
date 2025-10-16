@@ -84,28 +84,31 @@ router.post("/buy/:provider", async (req, res) => {
     // Deduct user balance
     await db.query("UPDATE users SET balance = balance - ? WHERE id = ?", [price, user_id]);
 
-    // Call EasyAccess API
-    const endpointMap = {
-      waec: "https://easyaccessapi.com.ng/api/waec.php",
-      neco: "https://easyaccessapi.com.ng/api/neco.php",
-      nabteb: "https://easyaccessapi.com.ng/api/nabteb.php",
-      nbais: "https://easyaccessapi.com.ng/api/nbais.php",
-    };
+   // Call EasyAccess API
+const endpointMap = {
+  waec: "https://easyaccessapi.com.ng/api/waec.php",
+  neco: "https://easyaccessapi.com.ng/api/neco.php",
+  nabteb: "https://easyaccessapi.com.ng/api/nabteb.php",
+  nbais: "https://easyaccessapi.com.ng/api/nbais.php",
+};
 
-    const response = await axios.get(endpointMap[provider], {
-      headers: { AuthorizationToken: EASY_ACCESS_TOKEN, "cache-control": "no-cache" },
-      timeout: 10000,
-    });
+const response = await axios.get(endpointMap[provider], {
+  headers: { AuthorizationToken: EASY_ACCESS_TOKEN, "cache-control": "no-cache" },
+  timeout: 10000,
+});
 
-    // Handle EasyAccess response
-    let pin;
-    if (typeof response.data === "object" && response.data.success === "false") {
-      // Refund user
-      await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [price, user_id]);
-      return res.status(400).json({ success: false, message: response.data.message });
-    } else {
-      pin = response.data; // Plain text pin
-    }
+// 🔹 Log full EasyAccess response
+console.log(`[EDUCATION] EasyAccess API response for ${provider}:`, response.data);
+
+// Handle EasyAccess response
+let pin;
+if (typeof response.data === "object" && response.data.success === "false") {
+  // Refund user
+  await db.query("UPDATE users SET balance = balance + ? WHERE id = ?", [price, user_id]);
+  return res.status(400).json({ success: false, message: response.data.message });
+} else {
+  pin = response.data; // Plain text pin
+}
 
     return res.json({ success: true, provider, price, pin });
   } catch (err) {
