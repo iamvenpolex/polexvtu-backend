@@ -4,7 +4,7 @@ const db = require("../config/db"); // Your MySQL connection
 const router = express.Router();
 
 const EASY_ACCESS_TOKEN = process.env.EASY_ACCESS_TOKEN; // Your EasyAccess token
-const BASE_URL = "https://easyaccessapi.com.ng/api/paytv.php";
+const BASE_URL = "https://easyaccessapi.com.ng/api";
 
 // Helper: Insert plan into DB if missing
 const insertPlanIfMissing = async (companyCode, plan) => {

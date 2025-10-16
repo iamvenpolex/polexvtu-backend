@@ -6,7 +6,7 @@ const router = express.Router();
 const db = require("../config/db"); // mysql2/promise pool
 
 const EASY_ACCESS_TOKEN = process.env.EASY_ACCESS_TOKEN;
-const BASE_URL = "https://easyaccessapi.com.ng/api";
+const BASE_URL = "https://easyaccessapi.com.ng/api/paytv.php";
 const WEBHOOK_URL = process.env.WEBHOOK_URL || "";
 
 // Map friendly company names to EasyAccess company codes
