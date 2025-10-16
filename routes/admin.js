@@ -11,7 +11,7 @@ const adminAuth = require("../middleware/adminAuth");
 // ------------------------
 router.use(
   cors({
-    origin: ["http://localhost:3000", "https://polexvtu-frontend.com"], // add frontend URLs
+    origin: ["http://localhost:3000", "https://polexvtu.vercel.app"], // add frontend URLs
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -27,7 +27,7 @@ router.get("/login", (req, res) => {
 // ------------------------
 // ADMIN LOGIN
 // ------------------------
-router.post("/login", async (req, res) => {
+router.post("/", async (req, res) => {
   const { email, password } = req.body;
 
   try {
