@@ -41,7 +41,7 @@ router.post("/request-reset", async (req, res) => {
 
     // ✅ Send styled HTML email
     const emailResponse = await resend.emails.send({
-      from: "TapAm <no-reply@mipitech.com.ng>",
+      from: "TapAm <team@mipitech.com.ng>",
       to: user.email,
       subject: "🔒 TapAm Password Reset Code",
       text: `Your password reset code is ${code}. It will expire in 10 minutes.`, // fallback plain text
@@ -59,11 +59,7 @@ router.post("/request-reset", async (req, res) => {
             This code will expire in 10 minutes.<br/>
             If you didn't request a password reset, you can ignore this email.
           </p>
-          <a 
-            href="https://yourapp.com/login" 
-            style="display: inline-block; margin-top: 20px; padding: 10px 20px; background-color: #f97316; color: #fff; text-decoration: none; border-radius: 5px;">
-            Login
-          </a>
+         
         </div>
       `,
     });
