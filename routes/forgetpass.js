@@ -7,12 +7,14 @@ const { Resend } = require("resend");
 // Initialize Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ✅ Send reset code
+// ✅ Send reset code with HTML email
 router.post("/request-reset", async (req, res) => {
   const { emailOrPhone } = req.body;
 
   if (!emailOrPhone) {
-    return res.status(400).json({ success: false, message: "Email or phone is required" });
+    return res
+      .status(400)
+      .json({ success: false, message: "Email or phone is required" });
   }
 
   try {
@@ -23,7 +25,9 @@ router.post("/request-reset", async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: "Account not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Account not found" });
     }
 
     const user = rows[0];
@@ -35,12 +39,33 @@ router.post("/request-reset", async (req, res) => {
       [code, expires, user.id]
     );
 
-    // ✅ Send email using Resend shared sender
+    // ✅ Send styled HTML email
     const emailResponse = await resend.emails.send({
-      from: "TapAm <onboarding@resend.dev>", // shared sender (no domain required)
+      from: "TapAm <no-reply@mipitech.com.ng>",
       to: user.email,
-      subject: "Password Reset Code",
-      text: `Your password reset code is ${code}. It will expire in 10 minutes.`,
+      subject: "🔒 TapAm Password Reset Code",
+      text: `Your password reset code is ${code}. It will expire in 10 minutes.`, // fallback plain text
+      html: `
+        <div style="font-family: Arial, sans-serif; text-align: center; padding: 20px;">
+          <h2 style="color: #f97316;">TapAm Password Reset</h2>
+          <p style="font-size: 16px; color: #333;">
+            Hi ${user.firstName || "there"},<br/>
+            We received a request to reset your password.
+          </p>
+          <p style="font-size: 24px; font-weight: bold; color: #f97316; margin: 20px 0;">
+            ${code}
+          </p>
+          <p style="font-size: 14px; color: #666;">
+            This code will expire in 10 minutes.<br/>
+            If you didn't request a password reset, you can ignore this email.
+          </p>
+          <a 
+            href="https://yourapp.com/login" 
+            style="display: inline-block; margin-top: 20px; padding: 10px 20px; background-color: #f97316; color: #fff; text-decoration: none; border-radius: 5px;">
+            Login
+          </a>
+        </div>
+      `,
     });
 
     console.log("📧 Email sent:", emailResponse);
@@ -48,7 +73,9 @@ router.post("/request-reset", async (req, res) => {
     res.json({ success: true, message: "Reset code sent successfully" });
   } catch (err) {
     console.error("Request reset error:", err);
-    res.status(500).json({ success: false, message: "Failed to send reset code" });
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to send reset code" });
   }
 });
 
@@ -57,7 +84,9 @@ router.post("/verify-code", async (req, res) => {
   const { emailOrPhone, code } = req.body;
 
   if (!emailOrPhone || !code) {
-    return res.status(400).json({ success: false, message: "All fields required" });
+    return res
+      .status(400)
+      .json({ success: false, message: "All fields required" });
   }
 
   try {
@@ -67,7 +96,9 @@ router.post("/verify-code", async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(400).json({ success: false, message: "Invalid code" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid code" });
     }
 
     const user = rows[0];
@@ -87,7 +118,9 @@ router.post("/reset-password", async (req, res) => {
   const { emailOrPhone, code, newPassword } = req.body;
 
   if (!emailOrPhone || !code || !newPassword) {
-    return res.status(400).json({ success: false, message: "All fields are required" });
+    return res
+      .status(400)
+      .json({ success: false, message: "All fields are required" });
   }
 
   try {
@@ -97,7 +130,9 @@ router.post("/reset-password", async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(400).json({ success: false, message: "Invalid code" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid code" });
     }
 
     const user = rows[0];
