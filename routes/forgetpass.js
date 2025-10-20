@@ -2,7 +2,10 @@ const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
+
+// Initialize Resend
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ✅ Send reset code
 router.post("/request-reset", async (req, res) => {
@@ -32,26 +35,20 @@ router.post("/request-reset", async (req, res) => {
       [code, expires, user.id]
     );
 
-    // Send email (you can replace this with SMS API if needed)
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.SMTP_EMAIL,
-        pass: process.env.SMTP_PASS,
-      },
-    });
-
-    await transporter.sendMail({
-      from: process.env.SMTP_EMAIL,
+    // ✅ Send email using Resend shared sender
+    const emailResponse = await resend.emails.send({
+      from: "Polex VTU <onboarding@resend.dev>", // shared sender (no domain required)
       to: user.email,
       subject: "Password Reset Code",
       text: `Your password reset code is ${code}. It will expire in 10 minutes.`,
     });
 
+    console.log("📧 Email sent:", emailResponse);
+
     res.json({ success: true, message: "Reset code sent successfully" });
   } catch (err) {
     console.error("Request reset error:", err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Failed to send reset code" });
   }
 });
 
