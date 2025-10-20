@@ -37,7 +37,7 @@ router.post("/request-reset", async (req, res) => {
 
     // ✅ Send email using Resend shared sender
     const emailResponse = await resend.emails.send({
-      from: "Polex VTU <onboarding@resend.dev>", // shared sender (no domain required)
+      from: "TapAm <onboarding@resend.dev>", // shared sender (no domain required)
       to: user.email,
       subject: "Password Reset Code",
       text: `Your password reset code is ${code}. It will expire in 10 minutes.`,
