@@ -23,17 +23,17 @@ const protect = (req, res, next) => {
 };
 
 // ------------------------
-// GET: Combined Transaction History (Wallet + Tapam + Reward)
+// GET: Combined Transaction History (Wallet + Tapam)
 // ------------------------
 router.get("/", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // 🧾 1️⃣ Wallet Transactions
+    // 🧾 1️⃣ Other Wallet Transactions (exclude reward-to-wallet & tapam-transfer)
     const [walletRows] = await db.execute(
       `SELECT id, reference, type, amount, status, created_at 
        FROM transactions 
-       WHERE user_id = ? 
+       WHERE user_id = ? AND type NOT IN ('reward-to-wallet','tapam-transfer')
        ORDER BY created_at DESC`,
       [userId]
     );
@@ -47,10 +47,6 @@ router.get("/", protect, async (req, res) => {
           description = "Wallet Funded";
           isCredit = true;
           break;
-        case "tapam-transfer":
-          description = "Transferred to TapAm";
-          isCredit = false;
-          break;
         case "airtime":
           description = "Bought Airtime";
           isCredit = false;
@@ -63,15 +59,10 @@ router.get("/", protect, async (req, res) => {
           description = tx.type;
       }
 
-      return {
-        ...tx,
-        source: "wallet",
-        description,
-        isCredit,
-      };
+      return { ...tx, source: "wallet", description, isCredit };
     });
 
-    // 💰 2️⃣ TapAm Transactions
+    // 💰 2️⃣ TapAm Transactions (Reward → Wallet + Tapam Transfer)
     const [tapamRows] = await db.execute(
       `SELECT 
          id, sender_id, sender_name, sender_email, 
@@ -88,12 +79,15 @@ router.get("/", protect, async (req, res) => {
       let isCredit = false;
 
       if (tx.sender_id === userId && tx.receiver_id === userId) {
+        // Reward → Wallet
         description = "Reward moved to wallet";
         isCredit = true;
       } else if (tx.sender_id === userId) {
+        // Sent Tapam transfer
         description = `Sent to ${tx.receiver_name}`;
         isCredit = false;
       } else if (tx.receiver_id === userId) {
+        // Received Tapam transfer
         description = `Received from ${tx.sender_name}`;
         isCredit = true;
       }
@@ -113,33 +107,10 @@ router.get("/", protect, async (req, res) => {
       };
     });
 
-    // 🎁 3️⃣ Reward-to-Wallet Transactions
-    const [rewardRows] = await db.execute(
-      `SELECT id, user_id, amount, reference, status, created_at
-       FROM rewards
-       WHERE user_id = ?
-       ORDER BY created_at DESC`,
-      [userId]
-    );
-
-    const rewardTransactions = rewardRows.map((tx) => ({
-      id: tx.id,
-      reference: tx.reference,
-      type: "reward",
-      amount: tx.amount,
-      status: tx.status,
-      created_at: tx.created_at,
-      description: "Reward credited to wallet",
-      isCredit: true,
-      source: "reward",
-    }));
-
     // 🔗 Combine all
-    const allTransactions = [
-      ...walletTransactions,
-      ...tapamTransactions,
-      ...rewardTransactions,
-    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    const allTransactions = [...walletTransactions, ...tapamTransactions].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
 
     res.json(allTransactions);
   } catch (err) {
