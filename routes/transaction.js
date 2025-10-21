@@ -23,13 +23,12 @@ const protect = (req, res, next) => {
 };
 
 // ------------------------
-// GET: Combined Transaction History (Wallet + Tapam)
+// GET: Wallet Transactions
 // ------------------------
 router.get("/", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // 🧾 1️⃣ Other Wallet Transactions (exclude reward-to-wallet & tapam-transfer)
     const [walletRows] = await db.execute(
       `SELECT id, reference, type, amount, status, created_at 
        FROM transactions 
@@ -62,7 +61,20 @@ router.get("/", protect, async (req, res) => {
       return { ...tx, source: "wallet", description, isCredit };
     });
 
-    // 💰 2️⃣ TapAm Transactions (Reward → Wallet + Tapam Transfer)
+    res.json(walletTransactions);
+  } catch (err) {
+    console.error("❌ Error fetching wallet transactions:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ------------------------
+// GET: TapAm Transactions
+// ------------------------
+router.get("/tapam", protect, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
     const [tapamRows] = await db.execute(
       `SELECT 
          id, sender_id, sender_name, sender_email, 
@@ -83,11 +95,9 @@ router.get("/", protect, async (req, res) => {
         description = "Reward moved to wallet";
         isCredit = true;
       } else if (tx.sender_id === userId) {
-        // Sent Tapam transfer
         description = `Sent to ${tx.receiver_name}`;
         isCredit = false;
       } else if (tx.receiver_id === userId) {
-        // Received Tapam transfer
         description = `Received from ${tx.sender_name}`;
         isCredit = true;
       }
@@ -107,14 +117,9 @@ router.get("/", protect, async (req, res) => {
       };
     });
 
-    // 🔗 Combine all
-    const allTransactions = [...walletTransactions, ...tapamTransactions].sort(
-      (a, b) => new Date(b.created_at) - new Date(a.created_at)
-    );
-
-    res.json(allTransactions);
+    res.json(tapamTransactions);
   } catch (err) {
-    console.error("❌ Error fetching transactions:", err);
+    console.error("❌ Error fetching TapAm transactions:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
