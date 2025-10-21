@@ -29,7 +29,7 @@ router.get("/", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // 🧾 1. Fetch from transactions table
+    // 🧾 1️⃣ Wallet Transactions
     const [walletRows] = await db.execute(
       `SELECT id, reference, type, amount, status, created_at 
        FROM transactions 
@@ -71,7 +71,7 @@ router.get("/", protect, async (req, res) => {
       };
     });
 
-    // 💰 2. Fetch from tapam_accounts table
+    // 💰 2️⃣ TapAm Transactions
     const [tapamRows] = await db.execute(
       `SELECT 
          id, sender_id, sender_name, sender_email, 
@@ -113,10 +113,33 @@ router.get("/", protect, async (req, res) => {
       };
     });
 
-    // 🔗 Combine both histories
-    const allTransactions = [...walletTransactions, ...tapamTransactions].sort(
-      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    // 🎁 3️⃣ Reward-to-Wallet Transactions
+    const [rewardRows] = await db.execute(
+      `SELECT id, user_id, amount, reference, status, created_at
+       FROM rewards
+       WHERE user_id = ?
+       ORDER BY created_at DESC`,
+      [userId]
     );
+
+    const rewardTransactions = rewardRows.map((tx) => ({
+      id: tx.id,
+      reference: tx.reference,
+      type: "reward",
+      amount: tx.amount,
+      status: tx.status,
+      created_at: tx.created_at,
+      description: "Reward credited to wallet",
+      isCredit: true,
+      source: "reward",
+    }));
+
+    // 🔗 Combine all
+    const allTransactions = [
+      ...walletTransactions,
+      ...tapamTransactions,
+      ...rewardTransactions,
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     res.json(allTransactions);
   } catch (err) {
