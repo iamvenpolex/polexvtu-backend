@@ -52,11 +52,7 @@ router.post("/reward-to-wallet", protect, async (req, res) => {
       [amount, amount, userId]
     );
 
-    // 🧾 Log into transactions table
-    await db.execute(
-      "INSERT INTO transactions (user_id, type, amount, status, reference) VALUES (?, ?, ?, ?, ?)",
-      [userId, "reward-to-wallet", amount, "success", reference]
-    );
+   
 
     // 🧾 Log into tapam_accounts (sender = receiver = same user)
     await db.execute(
@@ -143,10 +139,7 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
       recipient.id,
     ]);
 
-    await db.execute(
-      "INSERT INTO transactions (user_id, type, amount, status, reference) VALUES (?, ?, ?, ?, ?)",
-      [userId, "tapam-transfer", amount, "success", reference]
-    );
+   
 
     await db.execute(
       `INSERT INTO tapam_accounts 

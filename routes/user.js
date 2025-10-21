@@ -36,7 +36,7 @@ router.get("/profile", authMiddleware, async (req, res) => {
 
     // Use db.execute(), not db.query()
     const [rows] = await db.execute(
-      "SELECT id, first_name, last_name, email, balance, reward FROM users WHERE id = ?",
+      "SELECT id, first_name, last_name, email, phone, balance, reward FROM users WHERE id = ?",
       [req.user.id]
     );
 
@@ -52,6 +52,7 @@ router.get("/profile", authMiddleware, async (req, res) => {
       first_name: user.first_name || "",
       last_name: user.last_name || "",
       email: user.email || "",
+      phone: user.phone || "",
       balance: Number(user.balance || 0),
       reward: Number(user.reward || 0),
     };
