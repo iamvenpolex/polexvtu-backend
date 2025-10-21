@@ -1,10 +1,10 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db"); // MySQL connection
+const db = require("../config/db");
 const jwt = require("jsonwebtoken");
 
 // ------------------------
-// Middleware to protect routes
+// Middleware: Protect Routes
 // ------------------------
 const protect = (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -34,7 +34,7 @@ router.post("/reward-to-wallet", protect, async (req, res) => {
 
   try {
     const [rows] = await db.execute(
-      "SELECT reward, balance FROM users WHERE id=?",
+      "SELECT first_name, last_name, email, reward, balance FROM users WHERE id=?",
       [userId]
     );
     if (!rows.length) return res.status(404).json({ error: "User not found" });
@@ -43,16 +43,45 @@ router.post("/reward-to-wallet", protect, async (req, res) => {
     if (user.reward < amount)
       return res.status(400).json({ error: "Insufficient reward balance" });
 
+    // 🔖 Create reference
+    const reference = `REWARD${Date.now()}`;
+
+    // 💰 Update reward and wallet balances
     await db.execute(
       "UPDATE users SET reward = reward - ?, balance = balance + ? WHERE id=?",
       [amount, amount, userId]
     );
 
+    // 🧾 Log into transactions table
+    await db.execute(
+      "INSERT INTO transactions (user_id, type, amount, status, reference) VALUES (?, ?, ?, ?, ?)",
+      [userId, "reward-to-wallet", amount, "success", reference]
+    );
+
+    // 🧾 Log into tapam_accounts (sender = receiver = same user)
+    await db.execute(
+      `INSERT INTO tapam_accounts 
+        (sender_id, sender_name, sender_email, receiver_id, receiver_name, receiver_email, amount, reference, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId,
+        `${user.first_name} ${user.last_name}`,
+        user.email,
+        userId,
+        `${user.first_name} ${user.last_name}`,
+        user.email,
+        amount,
+        reference,
+        "success",
+      ]
+    );
+
     res.json({
-      message: `Successfully moved ₦${amount.toLocaleString()} to wallet.`,
+      message: `✅ Successfully moved ₦${amount.toLocaleString()} from reward to wallet.`,
+      reference,
     });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Reward → Wallet Error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -71,12 +100,10 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
       .status(400)
       .json({ error: "Email and recipient name are required" });
 
-  // 🧹 Normalize input
   email = email.trim().toLowerCase();
   recipientName = recipientName.trim();
 
   try {
-    // 🔍 Lookup recipient
     const [recipientRows] = await db.execute(
       "SELECT id, first_name, last_name, email FROM users WHERE email = ? AND id != ?",
       [email, userId]
@@ -88,18 +115,15 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
     const recipient = recipientRows[0];
     const fullName = `${recipient.first_name} ${recipient.last_name}`;
 
-    // ✅ Normalize and verify names
     const normalize = (str) => str.toLowerCase().trim().replace(/\s+/g, " ");
     if (normalize(fullName) !== normalize(recipientName)) {
-      console.log("⚠️ Name mismatch:", fullName, "vs", recipientName);
       return res
         .status(400)
         .json({ error: "Recipient name does not match our records." });
     }
 
-    // 💰 Check sender balance
     const [userRows] = await db.execute(
-      "SELECT balance FROM users WHERE id=?",
+      "SELECT first_name, last_name, email, balance FROM users WHERE id=?",
       [userId]
     );
     if (!userRows.length) return res.status(404).json({ error: "User not found" });
@@ -108,27 +132,43 @@ router.post("/wallet-to-tapam", protect, async (req, res) => {
     if (user.balance < amount)
       return res.status(400).json({ error: "Insufficient wallet balance" });
 
-    // 🏦 Deduct from sender
+    const reference = `TAPAM${Date.now()}`;
+
     await db.execute("UPDATE users SET balance = balance - ? WHERE id=?", [
       amount,
       userId,
     ]);
-
-    // 💸 Add to recipient
     await db.execute("UPDATE users SET balance = balance + ? WHERE id=?", [
       amount,
       recipient.id,
     ]);
 
-    // 🧾 Log transaction
     await db.execute(
       "INSERT INTO transactions (user_id, type, amount, status, reference) VALUES (?, ?, ?, ?, ?)",
-      [userId, "tapam-transfer", amount, "success", `TAPAM${Date.now()}`]
+      [userId, "tapam-transfer", amount, "success", reference]
+    );
+
+    await db.execute(
+      `INSERT INTO tapam_accounts 
+        (sender_id, sender_name, sender_email, receiver_id, receiver_name, receiver_email, amount, reference, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId,
+        `${user.first_name} ${user.last_name}`,
+        user.email,
+        recipient.id,
+        fullName,
+        recipient.email,
+        amount,
+        reference,
+        "success",
+      ]
     );
 
     res.json({
       message: `✅ Successfully sent ₦${amount.toLocaleString()} to ${fullName}`,
       recipient: fullName,
+      reference,
     });
   } catch (err) {
     console.error("❌ Wallet → Tapam Error:", err);

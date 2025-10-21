@@ -23,20 +23,22 @@ const protect = (req, res, next) => {
 };
 
 // ------------------------
-// GET: User Transaction History
+// GET: Combined Transaction History (Wallet + Tapam + Reward)
 // ------------------------
 router.get("/", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-   const [rows] = await db.execute(
-  "SELECT id, reference, type, amount, status, created_at FROM transactions WHERE user_id = ? ORDER BY created_at DESC",
-  [userId]
-);
+    // 🧾 1. Fetch from transactions table
+    const [walletRows] = await db.execute(
+      `SELECT id, reference, type, amount, status, created_at 
+       FROM transactions 
+       WHERE user_id = ? 
+       ORDER BY created_at DESC`,
+      [userId]
+    );
 
-
-    // Map type to description and credit/debit
-    const transactions = rows.map((tx) => {
+    const walletTransactions = walletRows.map((tx) => {
       let description = "";
       let isCredit = false;
 
@@ -46,7 +48,7 @@ router.get("/", protect, async (req, res) => {
           isCredit = true;
           break;
         case "tapam-transfer":
-          description = "Transferred to TamAm";
+          description = "Transferred to TapAm";
           isCredit = false;
           break;
         case "airtime":
@@ -63,14 +65,62 @@ router.get("/", protect, async (req, res) => {
 
       return {
         ...tx,
+        source: "wallet",
         description,
         isCredit,
       };
     });
 
-    res.json(transactions);
+    // 💰 2. Fetch from tapam_accounts table
+    const [tapamRows] = await db.execute(
+      `SELECT 
+         id, sender_id, sender_name, sender_email, 
+         receiver_id, receiver_name, receiver_email, 
+         amount, reference, status, created_at
+       FROM tapam_accounts
+       WHERE sender_id = ? OR receiver_id = ?
+       ORDER BY created_at DESC`,
+      [userId, userId]
+    );
+
+    const tapamTransactions = tapamRows.map((tx) => {
+      let description = "";
+      let isCredit = false;
+
+      if (tx.sender_id === userId && tx.receiver_id === userId) {
+        description = "Reward moved to wallet";
+        isCredit = true;
+      } else if (tx.sender_id === userId) {
+        description = `Sent to ${tx.receiver_name}`;
+        isCredit = false;
+      } else if (tx.receiver_id === userId) {
+        description = `Received from ${tx.sender_name}`;
+        isCredit = true;
+      }
+
+      return {
+        id: tx.id,
+        reference: tx.reference,
+        type: "tapam",
+        amount: tx.amount,
+        status: tx.status,
+        created_at: tx.created_at,
+        sender_name: tx.sender_name,
+        receiver_name: tx.receiver_name,
+        description,
+        isCredit,
+        source: "tapam",
+      };
+    });
+
+    // 🔗 Combine both histories
+    const allTransactions = [...walletTransactions, ...tapamTransactions].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
+
+    res.json(allTransactions);
   } catch (err) {
-    console.error("Error fetching transactions:", err);
+    console.error("❌ Error fetching transactions:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
