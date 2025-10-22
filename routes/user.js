@@ -9,7 +9,7 @@ function authMiddleware(req, res, next) {
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     console.error("❌ No Authorization header or invalid format");
-    return res.status(401).json({ message: "No token provided" });
+    return res.status(401).json({ message: "No token provided. Log in again" });
   }
 
   const token = authHeader.split(" ")[1];
@@ -25,7 +25,7 @@ function authMiddleware(req, res, next) {
     next();
   } catch (err) {
     console.error("❌ Token verification failed:", err.message);
-    return res.status(401).json({ message: "Invalid or expired token" });
+    return res.status(401).json({ message: "Invalid or expired token. Log in again" });
   }
 }
 
@@ -62,7 +62,7 @@ router.get("/profile", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("❌ Server error while fetching profile:", err);
     res.status(500).json({
-      message: "Server error",
+      message: "Please try again later",
       error: err.message,
       stack: err.stack,
     });

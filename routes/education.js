@@ -38,7 +38,7 @@ router.put("/prices/:provider", async (req, res) => {
     return res.json({ success: true, provider, price: numericPrice });
   } catch (err) {
     console.error("PUT /api/education/prices/:provider error:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    return res.status(500).json({ success: false, message: "Please try again" });
   }
 });
 
@@ -51,7 +51,7 @@ router.get("/prices", async (req, res) => {
     return res.json({ success: true, data: rows });
   } catch (err) {
     console.error("GET /api/education/prices error:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    return res.status(500).json({ success: false, message: "Please try again" });
   }
 });
 
@@ -113,7 +113,7 @@ if (typeof response.data === "object" && response.data.success === "false") {
     return res.json({ success: true, provider, price, pin });
   } catch (err) {
     console.error("POST /api/education/buy/:provider error:", err.response?.data || err.message || err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    return res.status(500).json({ success: false, message: "Please try again" });
   }
 });
 

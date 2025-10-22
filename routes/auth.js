@@ -37,7 +37,7 @@ router.post("/register", async (req, res) => {
     res.json({ token, message: "Registration successful" });
   } catch (err) {
     console.error("Register error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Please try again after 5secs" });
   }
 });
 
@@ -58,14 +58,14 @@ router.post("/login", async (req, res) => {
     );
 
     if (!users || users.length === 0) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({ message: "Invalid credentials. Please try again after 15secs" });
     }
 
     const user = users[0];
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({ message: "Invalid credentials. Please try again after 15secs" });
     }
 
     const token = jwt.sign(
@@ -83,7 +83,8 @@ router.post("/login", async (req, res) => {
     });
   } catch (err) {
     console.error("Login error:", err);
-    res.status(500).json({ message: "Server error" });
+    // it was server error before
+    res.status(500).json({ message: "Please try again" }); 
   }
 });
 

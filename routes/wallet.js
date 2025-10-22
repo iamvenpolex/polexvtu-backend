@@ -19,7 +19,7 @@ const protect = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
-    return res.status(401).json({ message: "Token invalid or expired" });
+    return res.status(401).json({ message: "Token invalid or expired. Login again" });
   }
 };
 
@@ -44,7 +44,7 @@ router.get("/balance", protect, async (req, res) => {
     });
   } catch (error) {
     console.error("Balance error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Please reload page" });
   }
 });
 

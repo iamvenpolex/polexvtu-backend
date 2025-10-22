@@ -105,7 +105,7 @@ router.post("/verify-code", async (req, res) => {
     res.json({ success: true, message: "Code verified successfully" });
   } catch (err) {
     console.error("Verify code error:", err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Try again" });
   }
 });
 
@@ -146,7 +146,7 @@ router.post("/reset-password", async (req, res) => {
     res.json({ success: true, message: "Password reset successful" });
   } catch (err) {
     console.error("Reset password error:", err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Try againa" });
   }
 });
 
