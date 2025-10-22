@@ -11,7 +11,7 @@ const adminAuth = require("../middleware/adminAuth");
 // ------------------------
 router.use(
   cors({
-    origin: ["http://localhost:3000", "https://polexvtu.vercel.app"], // add frontend URLs
+    origin: ["http://localhost:3000", "https://tapam.mipitech.com.ng"], // add frontend URLs
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })

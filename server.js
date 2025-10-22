@@ -25,7 +25,7 @@ const app = express();
 // ✅ Allowed origins
 const allowedOrigins = [
   "http://localhost:3000",       // Local dev
-  "https://polexvtu.vercel.app", // Production frontend
+  "https://tapam.mipitech.com.ng", // Production frontend
 ];
 
 // ✅ CORS setup (handles preflight automatically)
