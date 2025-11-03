@@ -37,7 +37,7 @@ router.post("/register", async (req, res) => {
     res.json({ token, message: "Registration successful" });
   } catch (err) {
     console.error("Register error:", err);
-    res.status(500).json({ message: "Please try again after 5secs" });
+    res.status(500).json({ message: "Please try again after 15secs" });
   }
 });
 
