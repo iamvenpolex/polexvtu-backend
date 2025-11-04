@@ -29,7 +29,7 @@ router.get("/plans/:product_type", async (req, res) => {
       response.data?.MTN ||
       response.data?.GLO ||
       response.data?.AIRTEL ||
-      response.data?.ETISALAT ||
+      response.data?.["9MOBILE"] ||
       [];
 
     // Fetch custom prices from DB
@@ -45,13 +45,13 @@ router.get("/plans/:product_type", async (req, res) => {
       }
     });
 
-    // Map plans, keeping EA price static
+    // Merge static + custom price
     const plansWithCustomPrice = apiPlans.map((p) => ({
       plan_id: p.plan_id,
       name: p.name,
-      price: p.price, // EA price from API (static)
+      price: p.price,
       validity: p.validity,
-      custom_price: priceMap[p.plan_id] ?? undefined, // only editable
+      custom_price: priceMap[p.plan_id] ?? undefined,
     }));
 
     return res.json({
@@ -85,20 +85,17 @@ router.post("/plans/custom-price", async (req, res) => {
   }
 
   try {
-    // Check if custom price already exists
     const [existing] = await db.query(
       "SELECT id FROM custom_data_prices WHERE product_type = ? AND plan_id = ?",
       [product_type, plan_id]
     );
 
     if (existing.length > 0) {
-      // Update only the custom price and status
       await db.query(
         "UPDATE custom_data_prices SET custom_price = ?, status = ? WHERE id = ?",
         [custom_price, status || "active", existing[0].id]
       );
     } else {
-      // Insert new row, EA price is stored separately (can be 0 if not needed)
       await db.query(
         "INSERT INTO custom_data_prices (product_type, plan_id, plan_name, api_price, custom_price, status) VALUES (?, ?, ?, ?, ?, ?)",
         [product_type, plan_id, plan_name, 0, custom_price, status || "active"]
@@ -114,6 +111,65 @@ router.post("/plans/custom-price", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to update custom price",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /plans/custom-price/bulk
+ * Save or update multiple custom prices at once
+ */
+router.post("/plans/custom-price/bulk", async (req, res) => {
+  const { product_type, plans } = req.body;
+
+  if (!product_type || !Array.isArray(plans) || plans.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid payload. Provide product_type and plans array.",
+    });
+  }
+
+  const connection = db;
+  try {
+    await connection.query("START TRANSACTION");
+
+    for (const plan of plans) {
+      const { plan_id, plan_name, custom_price, status } = plan;
+
+      if (!plan_id || custom_price == null) continue;
+
+      const [existing] = await connection.query(
+        "SELECT id FROM custom_data_prices WHERE product_type = ? AND plan_id = ?",
+        [product_type, plan_id]
+      );
+
+      if (existing.length > 0) {
+        await connection.query(
+          "UPDATE custom_data_prices SET custom_price = ?, status = ? WHERE id = ?",
+          [custom_price, status || "active", existing[0].id]
+        );
+      } else {
+        await connection.query(
+          "INSERT INTO custom_data_prices (product_type, plan_id, plan_name, api_price, custom_price, status) VALUES (?, ?, ?, ?, ?, ?)",
+          [product_type, plan_id, plan_name, 0, custom_price, status || "active"]
+        );
+      }
+    }
+
+    await connection.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "All custom prices updated successfully",
+    });
+  } catch (error) {
+    await connection.query("ROLLBACK");
+    console.error("Bulk custom price update error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update custom prices",
       error: error.message,
     });
   }
