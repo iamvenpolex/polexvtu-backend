@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db");
+const db = require("../config/db"); // postgres client
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
@@ -15,21 +15,24 @@ router.post("/register", async (req, res) => {
   }
 
   try {
-    // Check existing user (optional but recommended)
-    const [existing] = await db.execute("SELECT id FROM users WHERE email = ? OR phone = ?", [email, phone]);
-    if (existing.length > 0) {
+    // Check existing user
+    const existingUsers = await db`
+      SELECT id FROM users WHERE email = ${email} OR phone = ${phone}
+    `;
+    if (existingUsers.length > 0) {
       return res.status(400).json({ message: "Email or phone already in use" });
     }
 
     const hashed = await bcrypt.hash(password, 10);
 
-    const [result] = await db.execute(
-      "INSERT INTO users (first_name, last_name, email, phone, gender, password) VALUES (?, ?, ?, ?, ?, ?)",
-      [firstName, lastName, email, phone, gender, hashed]
-    );
+    const result = await db`
+      INSERT INTO users (first_name, last_name, email, phone, gender, password)
+      VALUES (${firstName}, ${lastName}, ${email}, ${phone}, ${gender}, ${hashed})
+      RETURNING id
+    `;
 
     const token = jwt.sign(
-      { id: result.insertId, email },
+      { id: result[0].id, email },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
@@ -37,7 +40,7 @@ router.post("/register", async (req, res) => {
     res.json({ token, message: "Registration successful" });
   } catch (err) {
     console.error("Register error:", err);
-    res.status(500).json({ message: "Please try again after 15secs" });
+    res.status(500).json({ message: "Please try again later" });
   }
 });
 
@@ -52,20 +55,19 @@ router.post("/login", async (req, res) => {
   }
 
   try {
-    const [users] = await db.execute(
-      "SELECT * FROM users WHERE email = ? OR phone = ?",
-      [identifier, identifier]
-    );
+    const users = await db`
+      SELECT * FROM users WHERE email = ${identifier} OR phone = ${identifier}
+    `;
 
     if (!users || users.length === 0) {
-      return res.status(401).json({ message: "Invalid credentials. Please try again after 15secs" });
+      return res.status(401).json({ message: "Invalid credentials" });
     }
 
     const user = users[0];
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid credentials. Please try again after 15secs" });
+      return res.status(401).json({ message: "Invalid credentials" });
     }
 
     const token = jwt.sign(
@@ -83,8 +85,7 @@ router.post("/login", async (req, res) => {
     });
   } catch (err) {
     console.error("Login error:", err);
-    // it was server error before
-    res.status(500).json({ message: "loading..." }); 
+    res.status(500).json({ message: "Server error. Please try again later" });
   }
 });
 
