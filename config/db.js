@@ -1,25 +1,19 @@
 // config/db.js
-const mysql = require("mysql2/promise");
+const postgres = require("postgres");
 require("dotenv").config();
 
-const db = mysql.createPool({
-  host: process.env.MYSQLHOST || process.env.DB_HOST,
-  port: process.env.MYSQLPORT || process.env.DB_PORT,
-  user: process.env.MYSQLUSER || process.env.DB_USER,
-  password: process.env.MYSQLPASSWORD || process.env.DB_PASS,
-  database: process.env.MYSQLDATABASE || process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
+// ✅ Create PostgreSQL client using Supabase connection string
+const db = postgres(process.env.DATABASE_URL, {
+  ssl: "require", // ✅ Supabase requires SSL
 });
 
+// ✅ Test database connection
 (async () => {
   try {
-    const conn = await db.getConnection();
-    console.log("✅ MySQL Connected");
-    conn.release();
+    await db`SELECT 1`;
+    console.log("✅ PostgreSQL Connected to Supabase");
   } catch (err) {
-    console.error("❌ DB Connection Failed:", err.message);
+    console.error("❌ PostgreSQL Connection Failed:", err.message);
   }
 })();
 

@@ -46,8 +46,8 @@ app.use(
 app.use(express.json());
 
 // ✅ Confirm DB connection
-db.getConnection()
-  .then(() => console.log("✅ MySQL Connected"))
+db`SELECT 1`
+  .then(() => console.log("✅ PostgreSQL Connected to Supabase"))
   .catch((err) => console.error("❌ Database Connection Failed:", err));
 
 // ✅ API routes

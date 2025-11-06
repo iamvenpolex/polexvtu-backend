@@ -21,6 +21,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.15.1",
     "nodemailer": "^7.0.9",
+    "postgres": "^3.4.7",
     "resend": "^6.2.0"
   },
   "devDependencies": {
