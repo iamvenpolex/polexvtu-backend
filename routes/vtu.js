@@ -112,43 +112,49 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
   const { product_type, plans } = req.body;
 
   if (!product_type || !Array.isArray(plans) || plans.length === 0) {
-    return res.status(400).json({ success: false, message: "Invalid payload. Provide product_type and plans array." });
+    return res.status(400).json({
+      success: false,
+      message: "Invalid payload. Provide product_type and plans array.",
+    });
   }
 
   try {
-    await db.begin();
+    await db.transaction(async (tx) => {
+      for (const plan of plans) {
+        const { plan_id, plan_name, custom_price, status } = plan;
+        if (!plan_id || custom_price == null) continue;
 
-    for (const plan of plans) {
-      const { plan_id, plan_name, custom_price, status } = plan;
-      if (!plan_id || custom_price == null) continue;
-
-      const existing = await db`
-        SELECT id FROM custom_data_prices 
-        WHERE product_type = ${product_type} AND plan_id = ${plan_id}
-      `;
-
-      if (existing.length > 0) {
-        await db`
-          UPDATE custom_data_prices 
-          SET custom_price = ${custom_price}, status = ${status || "active"} 
-          WHERE id = ${existing[0].id}
+        const existing = await tx`
+          SELECT id FROM custom_data_prices 
+          WHERE product_type = ${product_type} AND plan_id = ${plan_id}
         `;
-      } else {
-        await db`
-          INSERT INTO custom_data_prices 
-          (product_type, plan_id, plan_name, api_price, custom_price, status)
-          VALUES (${product_type}, ${plan_id}, ${plan_name}, 0, ${custom_price}, ${status || "active"})
-        `;
+
+        if (existing.length > 0) {
+          await tx`
+            UPDATE custom_data_prices 
+            SET custom_price = ${custom_price}, status = ${status || "active"} 
+            WHERE id = ${existing[0].id}
+          `;
+        } else {
+          await tx`
+            INSERT INTO custom_data_prices 
+            (product_type, plan_id, plan_name, api_price, custom_price, status)
+            VALUES (${product_type}, ${plan_id}, ${plan_name}, 0, ${custom_price}, ${status || "active"})
+          `;
+        }
       }
-    }
+    });
 
-    await db.commit();
     res.json({ success: true, message: "All custom prices updated successfully" });
   } catch (err) {
-    await db.rollback();
     console.error("❌ Bulk custom price update error:", err.message);
-    res.status(500).json({ success: false, message: "Failed to update custom prices", error: err.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to update custom prices",
+      error: err.message,
+    });
   }
 });
+
 
 module.exports = router;

@@ -1,5 +1,5 @@
 const jwt = require("jsonwebtoken");
-const db = require("../config/db"); // ✅ remove destructuring
+const db = require("../config/db"); // Postgres.js client
 
 // Middleware to verify admin token
 module.exports = async function adminAuth(req, res, next) {
@@ -15,12 +15,11 @@ module.exports = async function adminAuth(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Check if user exists and is admin
-    const [rows] = await db.execute(
-      "SELECT id, role FROM users WHERE id = ?",
-      [decoded.id]
-    );
+    const rows = await db`
+      SELECT id, role FROM users WHERE id = ${decoded.id}
+    `;
 
-    if (!rows.length) {
+    if (!rows || rows.length === 0) {
       return res.status(404).json({ error: "User not found" });
     }
 
