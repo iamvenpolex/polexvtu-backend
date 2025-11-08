@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db"); // Progress client
+const db = require("../config/db"); // Progress/OpenEdge client
 const jwt = require("jsonwebtoken");
 
 // ------------------------
@@ -38,14 +38,18 @@ router.get("/profile", authMiddleware, async (req, res) => {
   try {
     console.log("🔹 Fetching profile for user id:", req.user.id);
 
-    // Progress-compatible query
+    // Progress/OpenEdge SQL query
     const query = `
       SELECT id, first_name, last_name, email, phone, balance, reward
       FROM users
       WHERE id = ${req.user.id}
     `;
 
-    const rows = await db.query(query); // db.query() returns an array of rows
+    // Use db.run() for Progress; returns a result object
+    const result = await db.run(query); 
+
+    // Adapt depending on driver; some drivers return .rows
+    const rows = result.rows || result;
 
     if (!rows || rows.length === 0) {
       console.warn("⚠️ User not found for id:", req.user.id);
