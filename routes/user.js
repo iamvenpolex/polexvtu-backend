@@ -1,9 +1,11 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db");
+const db = require("../config/db"); // Progress client
 const jwt = require("jsonwebtoken");
 
+// ------------------------
 // Middleware to verify JWT
+// ------------------------
 function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
 
@@ -29,16 +31,21 @@ function authMiddleware(req, res, next) {
   }
 }
 
+// ------------------------
 // GET /api/user/profile
+// ------------------------
 router.get("/profile", authMiddleware, async (req, res) => {
   try {
     console.log("🔹 Fetching profile for user id:", req.user.id);
 
-    // Use db.execute(), not db.query()
-    const [rows] = await db.execute(
-      "SELECT id, first_name, last_name, email, phone, balance, reward FROM users WHERE id = ?",
-      [req.user.id]
-    );
+    // Progress-compatible query
+    const query = `
+      SELECT id, first_name, last_name, email, phone, balance, reward
+      FROM users
+      WHERE id = ${req.user.id}
+    `;
+
+    const rows = await db.query(query); // db.query() returns an array of rows
 
     if (!rows || rows.length === 0) {
       console.warn("⚠️ User not found for id:", req.user.id);
