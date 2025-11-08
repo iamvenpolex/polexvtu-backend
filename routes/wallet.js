@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const db = require("../config/db"); // Progress client
+const db = require("../config/db"); // postgres.js client
 const jwt = require("jsonwebtoken");
 
 // ------------------------
@@ -29,18 +29,20 @@ const protect = (req, res, next) => {
 router.get("/balance", protect, async (req, res) => {
   try {
     const userId = req.user.id;
-    const query = `SELECT first_name, last_name, balance, reward FROM users WHERE id = ${userId}`;
-    const rows = await db.query(query);
 
-    if (!rows || rows.length === 0)
-      return res.status(404).json({ message: "User not found" });
+    const users = await db`
+      SELECT first_name, last_name, balance, reward
+      FROM users
+      WHERE id = ${userId}
+    `;
+    if (!users.length) return res.status(404).json({ message: "User not found" });
 
-    const user = rows[0];
+    const user = users[0];
     res.json({
       firstName: user.first_name,
       lastName: user.last_name,
-      balance: parseFloat(user.balance) || 0,
-      reward: parseFloat(user.reward) || 0,
+      balance: Number(user.balance) || 0,
+      reward: Number(user.reward) || 0,
     });
   } catch (error) {
     console.error("Balance error:", error);
@@ -79,11 +81,10 @@ router.post("/fund", protect, async (req, res) => {
     const { authorization_url, reference } = response.data.data;
 
     // Save pending transaction
-    const insertQuery = `
+    await db`
       INSERT INTO transactions (user_id, reference, amount, type, status)
-      VALUES (${userId}, '${reference}', ${amount}, 'fund', 'pending')
+      VALUES (${userId}, ${reference}, ${amount}, 'fund', 'pending')
     `;
-    await db.query(insertQuery);
 
     res.json({ authorization_url, reference });
   } catch (error) {
@@ -120,31 +121,32 @@ async function verifyAndUpdate(reference) {
   const { status, amount } = response.data.data;
   if (status !== "success") throw new Error("Payment not successful");
 
-  const selectQuery = `SELECT user_id, status FROM transactions WHERE reference = '${reference}'`;
-  const rows = await db.query(selectQuery);
-  if (!rows || rows.length === 0) throw new Error("Transaction not found");
+  const transactions = await db`
+    SELECT user_id, status
+    FROM transactions
+    WHERE reference = ${reference}
+  `;
+  if (!transactions.length) throw new Error("Transaction not found");
 
-  const transaction = rows[0];
+  const transaction = transactions[0];
   if (transaction.status === "success") return;
 
   const userId = transaction.user_id;
   const nairaAmount = amount / 100;
 
   // Update transaction status
-  const updateTrans = `
+  await db`
     UPDATE transactions
     SET status = 'success', amount = ${nairaAmount}
-    WHERE reference = '${reference}'
+    WHERE reference = ${reference}
   `;
-  await db.query(updateTrans);
 
   // Update user's balance
-  const updateBalance = `
+  await db`
     UPDATE users
     SET balance = balance + ${nairaAmount}
     WHERE id = ${userId}
   `;
-  await db.query(updateBalance);
 }
 
 module.exports = router;

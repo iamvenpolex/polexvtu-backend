@@ -29,13 +29,12 @@ router.get("/", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const [walletRows] = await db.execute(
-      `SELECT id, reference, type, amount, status, created_at 
-       FROM transactions 
-       WHERE user_id = ? AND type NOT IN ('reward-to-wallet','tapam-transfer')
-       ORDER BY created_at DESC`,
-      [userId]
-    );
+    const walletRows = await db`
+      SELECT id, reference, type, amount, status, created_at
+      FROM transactions
+      WHERE user_id = ${userId} AND type NOT IN ('reward-to-wallet','tapam-transfer')
+      ORDER BY created_at DESC
+    `;
 
     const walletTransactions = walletRows.map((tx) => {
       let description = "";
@@ -75,16 +74,14 @@ router.get("/tapam", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const [tapamRows] = await db.execute(
-      `SELECT 
-         id, sender_id, sender_name, sender_email, 
-         receiver_id, receiver_name, receiver_email, 
-         amount, reference, status, created_at
-       FROM tapam_accounts
-       WHERE sender_id = ? OR receiver_id = ?
-       ORDER BY created_at DESC`,
-      [userId, userId]
-    );
+    const tapamRows = await db`
+      SELECT id, sender_id, sender_name, sender_email,
+             receiver_id, receiver_name, receiver_email,
+             amount, reference, status, created_at
+      FROM tapam_accounts
+      WHERE sender_id = ${userId} OR receiver_id = ${userId}
+      ORDER BY created_at DESC
+    `;
 
     const tapamTransactions = tapamRows.map((tx) => {
       let description = "";
@@ -106,7 +103,7 @@ router.get("/tapam", protect, async (req, res) => {
         id: tx.id,
         reference: tx.reference,
         type: "tapam",
-        amount: tx.amount,
+        amount: Number(tx.amount),
         status: tx.status,
         created_at: tx.created_at,
         sender_name: tx.sender_name,
