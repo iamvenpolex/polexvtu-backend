@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const db = require("../config/db");
+const db = require("../config/db"); // Progress client
 const jwt = require("jsonwebtoken");
 
 // ------------------------
@@ -29,11 +29,11 @@ const protect = (req, res, next) => {
 router.get("/balance", protect, async (req, res) => {
   try {
     const userId = req.user.id;
-    const [rows] = await db.execute(
-      "SELECT first_name, last_name, balance, reward FROM users WHERE id = ?",
-      [userId]
-    );
-    if (rows.length === 0) return res.status(404).json({ message: "User not found" });
+    const query = `SELECT first_name, last_name, balance, reward FROM users WHERE id = ${userId}`;
+    const rows = await db.query(query);
+
+    if (!rows || rows.length === 0)
+      return res.status(404).json({ message: "User not found" });
 
     const user = rows[0];
     res.json({
@@ -79,10 +79,11 @@ router.post("/fund", protect, async (req, res) => {
     const { authorization_url, reference } = response.data.data;
 
     // Save pending transaction
-    await db.execute(
-      "INSERT INTO transactions (user_id, reference, amount, type, status) VALUES (?, ?, ?, ?, ?)",
-      [userId, reference, amount, "fund", "pending"]
-    );
+    const insertQuery = `
+      INSERT INTO transactions (user_id, reference, amount, type, status)
+      VALUES (${userId}, '${reference}', ${amount}, 'fund', 'pending')
+    `;
+    await db.query(insertQuery);
 
     res.json({ authorization_url, reference });
   } catch (error) {
@@ -119,11 +120,9 @@ async function verifyAndUpdate(reference) {
   const { status, amount } = response.data.data;
   if (status !== "success") throw new Error("Payment not successful");
 
-  const [rows] = await db.execute(
-    "SELECT user_id, status FROM transactions WHERE reference = ?",
-    [reference]
-  );
-  if (rows.length === 0) throw new Error("Transaction not found");
+  const selectQuery = `SELECT user_id, status FROM transactions WHERE reference = '${reference}'`;
+  const rows = await db.query(selectQuery);
+  if (!rows || rows.length === 0) throw new Error("Transaction not found");
 
   const transaction = rows[0];
   if (transaction.status === "success") return;
@@ -132,16 +131,20 @@ async function verifyAndUpdate(reference) {
   const nairaAmount = amount / 100;
 
   // Update transaction status
-  await db.execute(
-    "UPDATE transactions SET status = ?, amount = ? WHERE reference = ?",
-    ["success", nairaAmount, reference]
-  );
+  const updateTrans = `
+    UPDATE transactions
+    SET status = 'success', amount = ${nairaAmount}
+    WHERE reference = '${reference}'
+  `;
+  await db.query(updateTrans);
 
   // Update user's balance
-  await db.execute(
-    "UPDATE users SET balance = balance + ? WHERE id = ?",
-    [nairaAmount, userId]
-  );
+  const updateBalance = `
+    UPDATE users
+    SET balance = balance + ${nairaAmount}
+    WHERE id = ${userId}
+  `;
+  await db.query(updateBalance);
 }
 
 module.exports = router;
