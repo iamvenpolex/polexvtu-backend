@@ -16,7 +16,6 @@ router.get("/plans/:product_type", async (req, res) => {
   try {
     console.log("🔹 Fetching plans for product_type:", product_type);
 
-    // Fetch plans from EasyAccess API
     const response = await axios.get(`${BASE_URL}/get_plans.php?product_type=${product_type}`, {
       headers: {
         AuthorizationToken: API_TOKEN,
@@ -26,10 +25,9 @@ router.get("/plans/:product_type", async (req, res) => {
 
     const apiPlans = response.data?.MTN || response.data?.GLO || response.data?.AIRTEL || response.data?.["9MOBILE"] || [];
 
-    // Fetch custom prices from DB
     const customRows = await db`
-      SELECT plan_id, custom_price, status 
-      FROM custom_data_prices 
+      SELECT plan_id, custom_price, status
+      FROM custom_data_prices
       WHERE product_type = ${product_type}
     `;
 
@@ -68,7 +66,7 @@ router.get("/plans/:product_type", async (req, res) => {
 
 // ------------------------
 // POST /plans/custom-price
-// Save or update only one custom price
+// Save or update one custom price
 // ------------------------
 router.post("/plans/custom-price", async (req, res) => {
   const { product_type, plan_id, plan_name, custom_price, status } = req.body;
@@ -79,19 +77,19 @@ router.post("/plans/custom-price", async (req, res) => {
 
   try {
     const existing = await db`
-      SELECT id FROM custom_data_prices 
+      SELECT id FROM custom_data_prices
       WHERE product_type = ${product_type} AND plan_id = ${plan_id}
     `;
 
     if (existing.length > 0) {
       await db`
-        UPDATE custom_data_prices 
-        SET custom_price = ${custom_price}, status = ${status || "active"} 
+        UPDATE custom_data_prices
+        SET custom_price = ${custom_price}, status = ${status || "active"}
         WHERE id = ${existing[0].id}
       `;
     } else {
       await db`
-        INSERT INTO custom_data_prices 
+        INSERT INTO custom_data_prices
         (product_type, plan_id, plan_name, api_price, custom_price, status)
         VALUES (${product_type}, ${plan_id}, ${plan_name}, 0, ${custom_price}, ${status || "active"})
       `;
@@ -119,25 +117,25 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
   }
 
   try {
-    await db.transaction(async (tx) => {
+    await db.tx(async (tx) => {
       for (const plan of plans) {
         const { plan_id, plan_name, custom_price, status } = plan;
         if (!plan_id || custom_price == null) continue;
 
         const existing = await tx`
-          SELECT id FROM custom_data_prices 
+          SELECT id FROM custom_data_prices
           WHERE product_type = ${product_type} AND plan_id = ${plan_id}
         `;
 
         if (existing.length > 0) {
           await tx`
-            UPDATE custom_data_prices 
-            SET custom_price = ${custom_price}, status = ${status || "active"} 
+            UPDATE custom_data_prices
+            SET custom_price = ${custom_price}, status = ${status || "active"}
             WHERE id = ${existing[0].id}
           `;
         } else {
           await tx`
-            INSERT INTO custom_data_prices 
+            INSERT INTO custom_data_prices
             (product_type, plan_id, plan_name, api_price, custom_price, status)
             VALUES (${product_type}, ${plan_id}, ${plan_name}, 0, ${custom_price}, ${status || "active"})
           `;
@@ -155,6 +153,5 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
     });
   }
 });
-
 
 module.exports = router;
