@@ -58,6 +58,7 @@ router.get("/profile", authMiddleware, async (req, res) => {
       last_name: user.last_name || "",
       email: user.email || "",
       phone: user.phone || "",
+      gender: user.gender || "",
       balance: Number(user.balance || 0),
       reward: Number(user.reward || 0),
     };
