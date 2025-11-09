@@ -3,7 +3,7 @@
 const express = require("express");
 const axios = require("axios");
 const router = express.Router();
-const db = require("../config/db"); // your users/wallet table
+const db = require("../config/db"); // postgres.js client
 
 const EASYACCESS_TOKEN = process.env.EASY_ACCESS_TOKEN;
 
@@ -20,16 +20,24 @@ router.post("/pay", async (req, res) => {
       return res.status(400).json({ success: false, message: "Minimum amount is ₦1000" });
     }
 
-    // Check wallet balance
-    const [user] = await db.execute("SELECT balance FROM users WHERE id = ?", [user_id]);
-    if (!user || user[0].balance < amount) {
+    // ✅ Check wallet balance
+    const userRows = await db`
+      SELECT balance FROM users WHERE id = ${user_id}
+    `;
+
+    if (!userRows || userRows.length === 0 || userRows[0].balance < amount) {
       return res.status(400).json({ success: false, message: "Insufficient wallet balance" });
     }
 
-    // Deduct from wallet
-    await db.execute("UPDATE users SET balance = balance - ? WHERE id = ?", [amount, user_id]);
+    const balanceBefore = Number(userRows[0].balance);
+    const balanceAfter = balanceBefore - amount;
 
-    // Call EasyAccess Pay API
+    // ✅ Deduct from wallet
+    await db`
+      UPDATE users SET balance = ${balanceAfter} WHERE id = ${user_id}
+    `;
+
+    // ✅ Call EasyAccess Pay API
     const response = await axios.post(
       "https://easyaccessapi.com.ng/api/payelectricity.php",
       { company, metertype, meterno, amount },
@@ -37,14 +45,12 @@ router.post("/pay", async (req, res) => {
     );
 
     const data = response.data;
-
     console.log("EasyAccess PAY API Response:", JSON.stringify(data, null, 2));
 
     const success = data.success === true || data.success === "true";
 
     if (success) {
       const token = data.message.token || data.message.mainToken || data.message.Token || null;
-
       return res.json({
         success: true,
         message: "Payment successful",
@@ -52,8 +58,10 @@ router.post("/pay", async (req, res) => {
         full_response: data,
       });
     } else {
-      // Refund wallet on failure
-      await db.execute("UPDATE users SET balance = balance + ? WHERE id = ?", [amount, user_id]);
+      // ✅ Refund wallet on failure
+      await db`
+        UPDATE users SET balance = ${balanceBefore} WHERE id = ${user_id}
+      `;
 
       return res.status(400).json({
         success: false,
@@ -85,7 +93,7 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ success: false, message: "Minimum amount is ₦1000" });
     }
 
-    // Call EasyAccess Verify API
+    // ✅ Call EasyAccess Verify API
     const response = await axios.post(
       "https://easyaccessapi.com.ng/api/verifyelectricity.php",
       { company, metertype, meterno, amount },
@@ -93,7 +101,6 @@ router.post("/verify", async (req, res) => {
     );
 
     const data = response.data;
-
     console.log("EasyAccess VERIFY API Response:", JSON.stringify(data, null, 2));
 
     const success = data.success === true || data.success === "true";

@@ -2,11 +2,11 @@
 
 const express = require("express");
 const axios = require("axios");
-const db = require("../config/db"); // MySQL connection
 const router = express.Router();
+const db = require("../config/db"); // ✅ postgres.js
 
 const BASE_URL = "https://easyaccessapi.com.ng/api/data.php";
-const API_TOKEN = process.env.EASY_ACCESS_TOKEN; // ENV token
+const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
 
 // ===== BUY DATA ROUTE =====
 router.post("/", async (req, res) => {
@@ -21,35 +21,41 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    // ----- Prevent duplicate client_reference -----
-    const [existingTx] = await db.query(
-      "SELECT id FROM transactions WHERE reference = ?",
-      [client_reference]
-    );
+    // ✅ Prevent duplicate reference
+    const existingTx = await db`
+      SELECT id FROM transactions WHERE reference = ${client_reference}
+    `;
+
     if (existingTx.length) {
       return res.status(400).json({ success: false, message: "Duplicate transaction reference" });
     }
 
-    // Fetch user
-    const [users] = await db.query("SELECT id, balance FROM users WHERE id = ?", [user_id]);
-    if (!users.length) {
+    // ✅ Fetch user
+    const users = await db`
+      SELECT id, balance FROM users WHERE id = ${user_id}
+    `;
+    if (users.length === 0) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
+
     const user = users[0];
 
-    // Fetch plan price
-    const [plans] = await db.query(
-      "SELECT plan_id, plan_name, custom_price FROM custom_data_prices WHERE plan_id = ? AND status='active'",
-      [dataplan]
-    );
-    if (!plans.length) {
+    // ✅ Fetch plan price
+    const plans = await db`
+      SELECT plan_id, plan_name, custom_price
+      FROM custom_data_prices
+      WHERE plan_id = ${dataplan} AND status = 'active'
+    `;
+
+    if (plans.length === 0) {
       return res.status(400).json({ success: false, message: "Plan not available" });
     }
-    const plan = plans[0];
-    const price = parseFloat(plan.custom_price);
 
-    // Check balance
-    if (user.balance < price) {
+    const plan = plans[0];
+    const price = Number(plan.custom_price);
+
+    // ✅ Wallet balance check
+    if (Number(user.balance) < price) {
       return res.status(400).json({
         success: false,
         message: "Insufficient balance",
@@ -58,108 +64,112 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Deduct balance
-    const balance_before = parseFloat(user.balance);
+    const balance_before = Number(user.balance);
     const balance_after = balance_before - price;
-    await db.query("UPDATE users SET balance = ? WHERE id = ?", [balance_after, user.id]);
 
-    // Insert transaction as pending
-    await db.query(
-      `INSERT INTO transactions 
-        (user_id, reference, type, amount, api_amount, status, network, plan, phone, via, description, balance_before, balance_after) 
-        VALUES (?, ?, 'data', ?, 0, 'pending', ?, ?, ?, 'wallet', ?, ?, ?)`,
-      [
-        user.id,
-        client_reference,
-        price,
-        network,
-        plan.plan_name,
-        mobile_no,
-        `Data purchase of ${plan.plan_name} via wallet`,
-        balance_before,
-        balance_after,
-      ]
-    );
+    // ✅ Deduct wallet
+    await db`
+      UPDATE users SET balance = ${balance_after} WHERE id = ${user.id}
+    `;
 
-    // Prepare EasyAccess request
+    // ✅ Insert pending transaction
+    await db`
+      INSERT INTO transactions (
+        user_id, reference, type, amount, api_amount, status,
+        network, plan, phone, via, description,
+        balance_before, balance_after
+      )
+      VALUES (
+        ${user.id}, ${client_reference}, 'data', ${price}, 0, 'pending',
+        ${network}, ${plan.plan_name}, ${mobile_no}, 'wallet',
+        ${"Data purchase of " + plan.plan_name + " via wallet"},
+        ${balance_before}, ${balance_after}
+      )
+    `;
+
+    // ✅ Prepare EasyAccess API request
     const params = new URLSearchParams();
     params.append("network", network);
     params.append("mobileno", mobile_no);
     params.append("dataplan", dataplan);
     params.append("client_reference", client_reference);
     params.append("max_amount_payable", price.toString());
-    params.append("webhook_url", "https://polexvtu-backend-production.up.railway.app/buydata/webhook");
+    params.append(
+      "webhook_url",
+      "https://polexvtu-backend-production.up.railway.app/buydata/webhook"
+    );
 
-    console.log(`➡️ Sending request to EasyAccess [${client_reference}]:`, params.toString());
+    console.log(`➡️ Sending EasyAccess Request [${client_reference}]`);
+
+    let response;
 
     try {
-      // Send request and wait for response
-      const response = await axios.post(BASE_URL, params.toString(), {
+      response = await axios.post(BASE_URL, params.toString(), {
         headers: {
-          "AuthorizationToken": API_TOKEN,
+          AuthorizationToken: API_TOKEN,
           "Content-Type": "application/x-www-form-urlencoded",
         },
       });
+    } catch (apiErr) {
+      console.error(`❌ DATA API Error [${client_reference}]`, apiErr);
 
-      console.log(`✅ EasyAccess response [${client_reference}]:`, response.data);
-
-      const eaStatus = response.data?.status?.toLowerCase();
-      const eaAmount = response.data?.amount || 0;
-
-      if (eaStatus === "successful") {
-        // Mark transaction success
-        await db.query(
-          "UPDATE transactions SET status='success', api_amount=? WHERE reference=?",
-          [eaAmount, client_reference]
-        );
-
-        return res.json({
-          success: true,
-          message: "Purchase successful",
-          status: "success",
-          amount: price,
-          network,
-          phone: mobile_no,
-          plan: plan.plan_name,
-        });
-      } else {
-        // Refund wallet if failed
-        await db.query("UPDATE users SET balance=? WHERE id=?", [balance_before, user.id]);
-        await db.query(
-          "UPDATE transactions SET status='failed', api_amount=? WHERE reference=?",
-          [eaAmount, client_reference]
-        );
-
-        return res.json({
-          success: false,
-          message: "Purchase failed",
-          status: "failed",
-          amount: price,
-          network,
-          phone: mobile_no,
-          plan: plan.plan_name,
-        });
-      }
-    } catch (apiError) {
-      console.error(`❌ EasyAccess API failed [${client_reference}]:`, apiError);
-
-      // Refund wallet on API failure
-      await db.query("UPDATE users SET balance=? WHERE id=?", [balance_before, user.id]);
-      await db.query("UPDATE transactions SET status='failed' WHERE reference=?", [client_reference]);
+      // ✅ Refund wallet on request failure
+      await db`UPDATE users SET balance = ${balance_before} WHERE id = ${user.id}`;
+      await db`UPDATE transactions SET status='failed' WHERE reference=${client_reference}`;
 
       return res.status(500).json({
         success: false,
         message: "Purchase failed due to API error. Wallet refunded.",
-        status: "failed",
-        error: apiError.message,
+        error: apiErr.message,
       });
     }
+
+    const ea = response.data;
+    const eaStatus = ea?.status?.toLowerCase();
+    const eaAmount = ea?.amount || 0;
+
+    console.log(`✅ EasyAccess response [${client_reference}]`, ea);
+
+    // ✅ If successful
+    if (eaStatus === "successful") {
+      await db`
+        UPDATE transactions 
+        SET status='success', api_amount=${eaAmount}
+        WHERE reference=${client_reference}
+      `;
+
+      return res.json({
+        success: true,
+        message: "Purchase successful",
+        status: "success",
+        amount: price,
+        network,
+        phone: mobile_no,
+        plan: plan.plan_name,
+      });
+    }
+
+    // ✅ If failed - refund
+    await db`UPDATE users SET balance = ${balance_before} WHERE id = ${user.id}`;
+    await db`
+      UPDATE transactions SET status='failed', api_amount=${eaAmount}
+      WHERE reference=${client_reference}
+    `;
+
+    return res.json({
+      success: false,
+      message: "Purchase failed",
+      status: "failed",
+      amount: price,
+      network,
+      phone: mobile_no,
+      plan: plan.plan_name,
+    });
   } catch (error) {
-    console.error(`❌ Buy data error [${client_reference}]:`, error);
+    console.error(`❌ Buy data error [${client_reference}]`, error);
     return res.status(500).json({
       success: false,
       message: "Error purchasing data",
-      status: "failed",
       error: error.message,
     });
   }
