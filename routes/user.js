@@ -40,7 +40,7 @@ router.get("/profile", authMiddleware, async (req, res) => {
 
     // postgres.js style query
     const rows = await db`
-      SELECT id, first_name, last_name, email, phone, balance, reward
+      SELECT id, first_name, last_name, email, phone, gender, balance, reward
       FROM users
       WHERE id = ${req.user.id}
     `;
