@@ -96,7 +96,7 @@ router.post("/", async (req, res) => {
     params.append("max_amount_payable", price.toString());
     params.append(
       "webhook_url",
-      "https://polexvtu-backend-production.up.railway.app/buydata/webhook"
+      "https://polexvtu-backend.onrender.com/buydata/webhook"
     );
 
     console.log(`➡️ Sending EasyAccess Request [${client_reference}]`);
