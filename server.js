@@ -17,7 +17,7 @@ const buyCableTvRoutes = require("./routes/buycabletv");
 const electricityRoutes = require("./routes/electricity");
 const educationRoutes = require("./routes/education");
 const forgetpassRoutes = require("./routes/forgetpass");
-
+const pingRoutes = require("./routes/ping");
 
 
 const app = express();
@@ -64,6 +64,7 @@ app.use("/api/buycabletv", buyCableTvRoutes); // buy/verify IUC
 app.use("/api/electricity", electricityRoutes); // buy/verify IUC
 app.use("/api/education", educationRoutes);
 app.use("/api/forgot-password", forgetpassRoutes);
+app.use("/api/ping", pingRoutes);
 
 // ✅ Root + Health check
 app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));
