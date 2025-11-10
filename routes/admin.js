@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const cors = require("cors");
-const db = require("../config/db");
+const db = require("../config/db"); // postgres.js client
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const adminAuth = require("../middleware/adminAuth");
@@ -18,17 +18,10 @@ router.use(
 );
 
 // ------------------------
-// ADMIN LOGIN PAGE (always shown)
+// TEST ENDPOINT
 // ------------------------
-router.get("/", (req, res) => {
-  res.send(`
-    <h1>Admin Login</h1>
-    <form method="POST" action="/admin/login">
-      <input name="email" placeholder="Email" /><br/>
-      <input name="password" type="password" placeholder="Password" /><br/>
-      <button type="submit">Login</button>
-    </form>
-  `);
+router.get("/login", (req, res) => {
+  res.send("✅ Admin login endpoint is live. Use POST to login.");
 });
 
 // ------------------------
@@ -64,10 +57,8 @@ router.post("/login", async (req, res) => {
 });
 
 // ------------------------
-// PROTECTED ROUTES
+// USERS MANAGEMENT
 // ------------------------
-
-// Users
 router.get("/users", adminAuth, async (req, res) => {
   try {
     const rows = await db`
@@ -105,7 +96,9 @@ router.patch("/users/:id", adminAuth, async (req, res) => {
   }
 });
 
-// Transactions
+// ------------------------
+// TRANSACTIONS MANAGEMENT
+// ------------------------
 router.get("/transactions", adminAuth, async (req, res) => {
   try {
     const rows = await db`
@@ -163,7 +156,9 @@ router.patch("/transactions/:id", adminAuth, async (req, res) => {
   }
 });
 
-// Analytics
+// ------------------------
+// ANALYTICS
+// ------------------------
 router.get("/top-users", adminAuth, async (req, res) => {
   try {
     const rows = await db`
@@ -193,7 +188,8 @@ router.get("/income", adminAuth, async (req, res) => {
     `;
 
     let grouped = {};
-    rows.forEach((r) => {
+
+    rows.forEach(r => {
       let key;
       const date = new Date(r.created_at);
       if (range === "week") {
@@ -204,6 +200,7 @@ router.get("/income", adminAuth, async (req, res) => {
       } else {
         key = date.toISOString().split("T")[0];
       }
+
       grouped[key] = (grouped[key] || 0) + Number(r.amount);
     });
 
