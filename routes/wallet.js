@@ -107,12 +107,12 @@ router.get("/fund/callback", async (req, res) => {
   try {
     await verifyAndUpdate(reference);
     res.redirect(
-      `${process.env.FRONTEND_URL}/dashboard/fund-wallet?status=success&reference=${reference}`
+      `${process.env.FRONTEND_URL}/dashboard/wallet/fund/callback?status=success&reference=${reference}`
     );
   } catch (error) {
     console.error("Callback error:", error);
     res.redirect(
-      `${process.env.FRONTEND_URL}/dashboard/fund-wallet?status=failed&reference=${reference}`
+      `${process.env.FRONTEND_URL}/dashboard/wallet/fund/callback?status=failed&reference=${reference}`
     );
   }
 });
