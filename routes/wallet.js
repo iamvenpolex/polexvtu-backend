@@ -176,4 +176,35 @@ router.get("/verify-transaction", protect, async (req, res) => {
   }
 });
 
+// ------------------------
+// POST: Paystack Webhook (Live)
+// ------------------------
+router.post("/fund/webhook", async (req, res) => {
+  try {
+    const event = req.body;
+
+    // Optional: Verify webhook signature
+    const hash = req.headers["x-paystack-signature"];
+    const secret = process.env.PAYSTACK_SECRET_KEY;
+    // You can use crypto to validate the hash if desired
+
+    // Only act on successful charges
+    if (event.event === "charge.success") {
+      const reference = event.data.reference;
+      try {
+        await verifyAndUpdate(reference); // Use your existing helper
+        console.log(`Webhook processed: ${reference}`);
+      } catch (err) {
+        console.error("Webhook verify error:", err);
+      }
+    }
+
+    // Respond 200 to Paystack
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Webhook error:", err);
+    res.sendStatus(500);
+  }
+});
+
 module.exports = router;
