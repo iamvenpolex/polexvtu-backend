@@ -19,7 +19,9 @@ const protect = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
-    return res.status(401).json({ message: "Token invalid or expired. Login again" });
+    return res
+      .status(401)
+      .json({ message: "Token invalid or expired. Login again" });
   }
 };
 
@@ -35,7 +37,8 @@ router.get("/balance", protect, async (req, res) => {
       FROM users
       WHERE id = ${userId}
     `;
-    if (!users.length) return res.status(404).json({ message: "User not found" });
+    if (!users.length)
+      return res.status(404).json({ message: "User not found" });
 
     const user = users[0];
     res.json({
@@ -58,7 +61,8 @@ router.post("/fund", protect, async (req, res) => {
     const userId = req.user.id;
     const { amount, email } = req.body;
 
-    if (!amount || amount <= 0) return res.status(400).json({ message: "Invalid amount" });
+    if (!amount || amount <= 0)
+      return res.status(400).json({ message: "Invalid amount" });
     if (!email) return res.status(400).json({ message: "Email is required" });
 
     const koboAmount = amount * 100;
@@ -94,7 +98,7 @@ router.post("/fund", protect, async (req, res) => {
 });
 
 // ------------------------
-// GET: Backend Callback
+// GET: Paystack Callback
 // ------------------------
 router.get("/fund/callback", async (req, res) => {
   const { reference } = req.query;
@@ -102,10 +106,14 @@ router.get("/fund/callback", async (req, res) => {
 
   try {
     await verifyAndUpdate(reference);
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard/fund-wallet?status=success&reference=${reference}`);
+    res.redirect(
+      `${process.env.FRONTEND_URL}/dashboard/fund-wallet?status=success&reference=${reference}`
+    );
   } catch (error) {
     console.error("Callback error:", error);
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard/fund-wallet?status=failed&reference=${reference}`);
+    res.redirect(
+      `${process.env.FRONTEND_URL}/dashboard/fund-wallet?status=failed&reference=${reference}`
+    );
   }
 });
 
@@ -129,24 +137,43 @@ async function verifyAndUpdate(reference) {
   if (!transactions.length) throw new Error("Transaction not found");
 
   const transaction = transactions[0];
-  if (transaction.status === "success") return;
+  if (transaction.status === "success") return; // Already processed
 
   const userId = transaction.user_id;
   const nairaAmount = amount / 100;
 
-  // Update transaction status
   await db`
     UPDATE transactions
     SET status = 'success', amount = ${nairaAmount}
     WHERE reference = ${reference}
   `;
 
-  // Update user's balance
   await db`
     UPDATE users
     SET balance = balance + ${nairaAmount}
     WHERE id = ${userId}
   `;
 }
+
+// ------------------------
+// GET: Verify Transaction (Frontend Polling)
+// ------------------------
+router.get("/verify-transaction", protect, async (req, res) => {
+  const { reference } = req.query;
+  if (!reference) return res.status(400).json({ message: "Reference missing" });
+
+  try {
+    const response = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
+    );
+
+    const { status } = response.data.data;
+    return res.json({ status });
+  } catch (error) {
+    console.error("Verification error:", error.response?.data || error.message);
+    res.status(500).json({ message: "Verification failed" });
+  }
+});
 
 module.exports = router;
