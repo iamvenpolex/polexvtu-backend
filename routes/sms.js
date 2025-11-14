@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require("../config/db"); // postgres client
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
+const { randomUUID } = require("crypto");
 
 // ------------------------
 // Middleware: Protect Routes
@@ -73,7 +74,7 @@ router.get("/current-price", protect, async (req, res) => {
       ORDER BY updated_at DESC
       LIMIT 1
     `;
-    res.json({ price: pricing[0]?.price_per_sms || 4 }); // default N4 if none set
+    res.json({ price: pricing[0]?.price_per_sms || 4 });
   } catch (err) {
     console.error("Get price error:", err);
     res.status(500).json({ message: "Failed to get price" });
@@ -96,6 +97,7 @@ router.post("/send", protect, async (req, res) => {
       SELECT balance FROM users WHERE id = ${req.user.id}
     `;
     if (!user.length) return res.status(404).json({ message: "User not found" });
+
     let balance = Number(user[0].balance) || 0;
     const balanceBefore = balance;
 
@@ -128,9 +130,11 @@ router.post("/send", protect, async (req, res) => {
       const batchInserts = [];
       for (const item of recipientsData) {
         const parts = item.split("|");
-        const status = parts[3] || "unknown";
+        const status = parts[3] || "pending"; // must match enum
         const recipientNumber = parts[1];
+        const messageId = parts[2] || randomUUID();
         const description = parts[4] || "SMS sent";
+        const reference = `SMS-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
         batchInserts.push(
           db`
@@ -144,8 +148,10 @@ router.post("/send", protect, async (req, res) => {
               description,
               balance_before,
               balance_after,
+              reference,
               created_at,
-              updated_at
+              updated_at,
+              message_id
             ) VALUES (
               ${req.user.id},
               'sms',
@@ -156,8 +162,10 @@ router.post("/send", protect, async (req, res) => {
               ${description},
               ${balanceBefore},
               ${balanceBefore - pricePerSMS},
+              ${reference},
               NOW(),
-              NOW()
+              NOW(),
+              ${messageId}
             )
           `
         );
@@ -172,8 +180,8 @@ router.post("/send", protect, async (req, res) => {
       pricePerSMS,
       balanceAfter: balance,
     });
-  } catch (err) {
-    console.error("Send SMS error:", err.response?.data || err.message);
+  } catch (err: unknown) {
+    console.error("Send SMS error:", err instanceof Error ? err.message : err);
     res.status(500).json({ message: "Failed to send SMS" });
   }
 });
