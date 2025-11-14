@@ -180,7 +180,7 @@ router.post("/send", protect, async (req, res) => {
       pricePerSMS,
       balanceAfter: balance,
     });
-  } catch (err: unknown) {
+  } catch (err) {
     console.error("Send SMS error:", err instanceof Error ? err.message : err);
     res.status(500).json({ message: "Failed to send SMS" });
   }
