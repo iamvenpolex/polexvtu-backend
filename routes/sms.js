@@ -1,4 +1,4 @@
-require("dotenv").config(); // <-- Load .env at the top
+require("dotenv").config(); // Load .env
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db"); // postgres client
@@ -64,7 +64,7 @@ router.post("/set-price", protect, adminProtect, async (req, res) => {
 });
 
 // ------------------------
-// GET: Get Current SMS Price
+// GET: Current SMS Price
 // ------------------------
 router.get("/current-price", protect, async (req, res) => {
   try {
@@ -73,7 +73,7 @@ router.get("/current-price", protect, async (req, res) => {
       ORDER BY updated_at DESC
       LIMIT 1
     `;
-    res.json({ price: pricing[0]?.price_per_sms || 4 }); // default 4 N if none set
+    res.json({ price: pricing[0]?.price_per_sms || 4 }); // default N4 if none set
   } catch (err) {
     console.error("Get price error:", err);
     res.status(500).json({ message: "Failed to get price" });
@@ -96,7 +96,8 @@ router.post("/send", protect, async (req, res) => {
       SELECT balance FROM users WHERE id = ${req.user.id}
     `;
     if (!user.length) return res.status(404).json({ message: "User not found" });
-    const balance = Number(user[0].balance) || 0;
+    let balance = Number(user[0].balance) || 0;
+    const balanceBefore = balance;
 
     // Fetch current SMS price
     const pricing = await db`
@@ -110,36 +111,58 @@ router.post("/send", protect, async (req, res) => {
     if (balance < totalCost)
       return res.status(400).json({ message: `Insufficient balance. Total cost: N${totalCost}` });
 
-    // Send SMS via SMSclone API with DND fallback
+    // Send SMS via SMSclone API
     const url = `https://smsclone.com/api/sms/dnd-fallback?username=${process.env.SMS_USERNAME}&password=${process.env.SMS_PASSWORD}&sender=${sender}&recipient=${numbers.join(",")}&message=${encodeURIComponent(message)}`;
     const response = await axios.get(url);
-    const smsData = response.data; // batch response from SMSclone
+    const smsData = response.data;
 
     // Deduct wallet
+    balance -= totalCost;
     await db`
-      UPDATE users SET balance = balance - ${totalCost} WHERE id = ${req.user.id}
+      UPDATE users SET balance = ${balance} WHERE id = ${req.user.id}
     `;
 
-    // Record transaction for each recipient
-    const batchRecords = [];
+    // Record transaction per recipient
     if (smsData.includes("|")) {
       const recipientsData = smsData.split(",");
+      const batchInserts = [];
       for (const item of recipientsData) {
         const parts = item.split("|");
-        const statusCode = parts[0].split("-")[0];
+        const status = parts[3] || "unknown";
         const recipientNumber = parts[1];
-        const messageId = parts[2];
-        const status = parts[3];
-        const description = parts[4];
+        const description = parts[4] || "SMS sent";
 
-        batchRecords.push(
+        batchInserts.push(
           db`
-            INSERT INTO transactions (user_id, type, amount, status, details, recipient, message_id)
-            VALUES (${req.user.id}, 'sms', ${pricePerSMS}, ${status}, ${description}, ${recipientNumber}, ${messageId})
+            INSERT INTO transactions (
+              user_id,
+              type,
+              amount,
+              status,
+              phone,
+              via,
+              description,
+              balance_before,
+              balance_after,
+              created_at,
+              updated_at
+            ) VALUES (
+              ${req.user.id},
+              'sms',
+              ${pricePerSMS},
+              ${status},
+              ${recipientNumber},
+              'smsclone',
+              ${description},
+              ${balanceBefore},
+              ${balanceBefore - pricePerSMS},
+              NOW(),
+              NOW()
+            )
           `
         );
       }
-      await Promise.all(batchRecords);
+      await Promise.all(batchInserts);
     }
 
     res.json({
@@ -147,6 +170,7 @@ router.post("/send", protect, async (req, res) => {
       smsResult: smsData,
       totalCost,
       pricePerSMS,
+      balanceAfter: balance,
     });
   } catch (err) {
     console.error("Send SMS error:", err.response?.data || err.message);
