@@ -4,7 +4,6 @@ const router = express.Router();
 const db = require("../config/db"); // Progress.js client
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
-const { randomUUID } = require("crypto");
 
 // ------------------------
 // Middleware: Protect Routes
@@ -43,8 +42,12 @@ router.post("/buy", protect, async (req, res) => {
     if (numericAmount < 50)
       return res.status(400).json({ error: "Minimum amount is 50 Naira" });
 
-    // --- Fetch user balance ---
-    const user = await db.table("users").where({ id: req.user.id }).first();
+    // --- Fetch user balance (Progress.js) ---
+    const userQuery = await db
+      .query("FOR EACH users WHERE id = ?", [req.user.id])
+      .fetch();
+
+    const user = userQuery[0]; // Progress.js returns array
     if (!user) return res.status(404).json({ error: "User not found" });
 
     const balanceBefore = parseFloat(user.balance || 0);
@@ -55,27 +58,26 @@ router.post("/buy", protect, async (req, res) => {
 
     // --- Insert transaction as pending ---
     const requestID = "REQ" + Date.now();
-    const transaction = await db
-      .table("transactions")
-      .insert({
-        user_id: req.user.id,
-        reference: requestID,
-        type: "airtime",
-        amount: numericAmount,
-        status: "pending",
-        created_at: new Date(),
-        api_amount: numericAmount,
-        network,
-        phone,
-        via: "wallet",
-        description: `Airtime purchase for ${phone}`,
-        balance_before: balanceBefore,
-        balance_after: balanceAfter,
-      })
-      .returning("*");
+    const transactionData = {
+      user_id: req.user.id,
+      reference: requestID,
+      type: "airtime",
+      amount: numericAmount,
+      status: "pending",
+      created_at: new Date(),
+      api_amount: numericAmount,
+      network,
+      phone,
+      via: "wallet",
+      description: `Airtime purchase for ${phone}`,
+      balance_before: balanceBefore,
+      balance_after: balanceAfter,
+    };
+
+    await db.insert("transactions", transactionData);
 
     // --- Deduct user balance ---
-    await db.table("users").where({ id: req.user.id }).update({ balance: balanceAfter });
+    await db.update("users", { balance: balanceAfter }, { id: req.user.id });
 
     // --- Call NelloBytes API ---
     const url = `https://www.nellobytesystems.com/APIAirtimeV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&MobileNetwork=${network}&Amount=${numericAmount}&MobileNumber=${phone}&RequestID=${requestID}&CallBackURL=${CALLBACK_URL}`;
@@ -84,7 +86,7 @@ router.post("/buy", protect, async (req, res) => {
     res.json({
       success: true,
       message: "Airtime purchase initiated",
-      transaction: transaction,
+      transaction: transactionData,
       requestID,
       apiResponse: apiResponse.data,
       balanceAfter,
