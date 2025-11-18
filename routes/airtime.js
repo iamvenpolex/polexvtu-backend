@@ -1,9 +1,13 @@
 require("dotenv").config();
 const express = require("express");
 const router = express.Router();
-const db = require("../config/db"); // Progress.js client
 const axios = require("axios");
+const db = require("../config/db"); // postgres.js client
 const jwt = require("jsonwebtoken");
+
+const USER_ID = process.env.NELLO_USER_ID;
+const API_KEY = process.env.NELLO_API_KEY;
+const CALLBACK_URL = process.env.NELLO_CALLBACK_URL;
 
 // ------------------------
 // Middleware: Protect Routes
@@ -27,10 +31,6 @@ const protect = (req, res, next) => {
 // ------------------------
 // Airtime Purchase Route
 // ------------------------
-const USER_ID = process.env.NELLO_USER_ID;
-const API_KEY = process.env.NELLO_API_KEY;
-const CALLBACK_URL = process.env.NELLO_CALLBACK_URL;
-
 router.post("/buy", protect, async (req, res) => {
   try {
     const { network, amount, phone } = req.body;
@@ -42,12 +42,13 @@ router.post("/buy", protect, async (req, res) => {
     if (numericAmount < 50)
       return res.status(400).json({ error: "Minimum amount is 50 Naira" });
 
-    // --- Fetch user balance (Progress.js) ---
-    const userQuery = await db
-      .query("FOR EACH users WHERE id = ?", [req.user.id])
-      .fetch();
-
-    const user = userQuery[0]; // Progress.js returns array
+    // --- Fetch user ---
+    const userRows = await db`
+      SELECT id, balance
+      FROM users
+      WHERE id = ${req.user.id}
+    `;
+    const user = userRows[0];
     if (!user) return res.status(404).json({ error: "User not found" });
 
     const balanceBefore = parseFloat(user.balance || 0);
@@ -74,10 +75,16 @@ router.post("/buy", protect, async (req, res) => {
       balance_after: balanceAfter,
     };
 
-    await db.insert("transactions", transactionData);
+    await db`
+      INSERT INTO transactions ${db(transactionData)}
+    `;
 
     // --- Deduct user balance ---
-    await db.update("users", { balance: balanceAfter }, { id: req.user.id });
+    await db`
+      UPDATE users
+      SET balance = ${balanceAfter}
+      WHERE id = ${req.user.id}
+    `;
 
     // --- Call NelloBytes API ---
     const url = `https://www.nellobytesystems.com/APIAirtimeV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&MobileNetwork=${network}&Amount=${numericAmount}&MobileNumber=${phone}&RequestID=${requestID}&CallBackURL=${CALLBACK_URL}`;
@@ -92,8 +99,8 @@ router.post("/buy", protect, async (req, res) => {
       balanceAfter,
     });
   } catch (err) {
-    console.error("Airtime buy error:", err instanceof Error ? err.message : err);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ Airtime buy error:", err.message);
+    res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
