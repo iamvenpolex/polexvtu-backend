@@ -75,28 +75,45 @@ router.post("/buy", protect, async (req, res) => {
       balance_after: balanceAfter,
     };
 
-    await db`
-      INSERT INTO transactions ${db(transactionData)}
-    `;
+    await db`INSERT INTO transactions ${db(transactionData)}`;
 
     // --- Deduct user balance ---
-    await db`
-      UPDATE users
-      SET balance = ${balanceAfter}
-      WHERE id = ${req.user.id}
-    `;
+    await db`UPDATE users SET balance = ${balanceAfter} WHERE id = ${req.user.id}`;
 
     // --- Call NelloBytes API ---
     const url = `https://www.nellobytesystems.com/APIAirtimeV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&MobileNetwork=${network}&Amount=${numericAmount}&MobileNumber=${phone}&RequestID=${requestID}&CallBackURL=${CALLBACK_URL}`;
     const apiResponse = await axios.get(url);
 
+    const apiData = apiResponse.data;
+    const apiCode = parseInt(apiData.STATUS_CODE);
+    let status = "pending"; // default
+
+    // --- Map NelloBytes STATUS_CODE to our DB status ---
+    if (apiCode === 200) status = "success";
+    else if (apiCode === 201 || (apiCode >= 600 && apiCode <= 699)) status = "pending"; // retry/network issues
+    else if ((apiCode >= 400 && apiCode <= 499) || apiCode === 299) status = "failed";
+    else if (apiCode >= 500 && apiCode <= 599) status = "cancelled";
+
+    // --- Update transaction status ---
+    await db`
+      UPDATE transactions
+      SET status = ${status}, api_response = ${JSON.stringify(apiData)}
+      WHERE reference = ${requestID}
+    `;
+
+    // --- Refund balance if failed or cancelled ---
+    if (status === "failed" || status === "cancelled") {
+      await db`UPDATE users SET balance = ${balanceBefore} WHERE id = ${req.user.id}`;
+    }
+
     res.json({
       success: true,
-      message: "Airtime purchase initiated",
+      message: "Airtime purchase processed",
       transaction: transactionData,
       requestID,
-      apiResponse: apiResponse.data,
-      balanceAfter,
+      apiResponse: apiData,
+      balanceAfter: status === "success" ? balanceAfter : balanceBefore,
+      status,
     });
   } catch (err) {
     console.error("❌ Airtime buy error:", err.message);
