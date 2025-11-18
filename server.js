@@ -19,6 +19,8 @@ const educationRoutes = require("./routes/education");
 const forgetpassRoutes = require("./routes/forgetpass");
 const pingRoutes = require("./routes/ping");
 const smsRoutes = require("./routes/sms"); 
+const airtimeRoutes = require("./routes/airtime");
+
 
 
 const app = express();
@@ -66,7 +68,8 @@ app.use("/api/electricity", electricityRoutes); // buy/verify IUC
 app.use("/api/education", educationRoutes);
 app.use("/api/forgot-password", forgetpassRoutes);
 app.use("/api/ping", pingRoutes);
-app.use("/api/sms", smsRoutes);   
+app.use("/api/sms", smsRoutes); 
+app.use("/api/airtime", airtimeRoutes);  
 
 // ✅ Root + Health check
 app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));
