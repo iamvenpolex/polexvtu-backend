@@ -29,100 +29,109 @@ const protect = (req, res, next) => {
 };
 
 // ------------------------
-// Airtime Purchase Route
+// Map Nello Status to Internal Status
+// ------------------------
+function mapNelloStatus(raw) {
+  const { statuscode, status } = raw;
+
+  if (statuscode === "200") return "success";
+  if (statuscode === "100") return "pending";  // ORDER RECEIVED
+  if (statuscode === "201") return "pending";  // ORDER ON HOLD
+  if (statuscode === "402") return "failed";   // Vendor insufficient balance
+  if (status === "ORDER_CANCELLED") return "cancelled";
+
+  return "failed";
+}
+
+// ------------------------
+// Buy Airtime Route
 // ------------------------
 router.post("/buy", protect, async (req, res) => {
+  const client = db; // postgres.js client
+
   try {
     const { network, amount, phone } = req.body;
 
     if (!network || !amount || !phone)
       return res.status(400).json({ error: "All fields are required" });
 
-    const numericAmount = parseFloat(amount);
+    const numericAmount = Number(amount);
     if (numericAmount < 50)
       return res.status(400).json({ error: "Minimum amount is 50 Naira" });
 
     // Fetch user
-    const userRows = await db`
-      SELECT id, balance
-      FROM users
-      WHERE id = ${req.user.id}
+    const [user] = await client`
+      SELECT id, balance FROM users WHERE id = ${req.user.id}
     `;
-    const user = userRows[0];
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const balanceBefore = parseFloat(user.balance || 0);
+    const balanceBefore = Number(user.balance);
     if (balanceBefore < numericAmount)
-      return res.status(400).json({ error: "Insufficient balance" });
+      return res.status(400).json({ error: "Insufficient wallet balance" });
 
     const balanceAfter = balanceBefore - numericAmount;
-
-    // Insert transaction
     const requestID = "REQ" + Date.now();
-    await db`
-      INSERT INTO transactions (
-        user_id, reference, type, amount, status, created_at, 
-        api_amount, network, phone, via, description, 
-        balance_before, balance_after
-      ) VALUES (
-        ${req.user.id}, ${requestID}, 'airtime', ${numericAmount}, 'pending', ${new Date()},
-        ${numericAmount}, ${network}, ${phone}, 'wallet', ${`Airtime purchase for ${phone}`},
-        ${balanceBefore}, ${balanceAfter}
-      )
-    `;
 
-    // Deduct user balance
-    await db`UPDATE users SET balance = ${balanceAfter} WHERE id = ${req.user.id}`;
+    // --- Start transaction (atomic operations) ---
+    await client.begin(async (sql) => {
+      // Insert pending transaction
+      await sql`
+        INSERT INTO transactions (
+          user_id, reference, type, amount, status, created_at,
+          api_amount, network, phone, via, description,
+          balance_before, balance_after
+        ) VALUES (
+          ${req.user.id}, ${requestID}, 'airtime', ${numericAmount}, 'pending', NOW(),
+          ${numericAmount}, ${network}, ${phone}, 'wallet',
+          ${`Airtime purchase for ${phone}`},
+          ${balanceBefore}, ${balanceAfter}
+        )
+      `;
 
-    // Call API
+      // Deduct balance
+      await sql`
+        UPDATE users SET balance = ${balanceAfter} WHERE id = ${req.user.id}
+      `;
+    });
+    // --- End atomic block ---
+
+    // Call NelloByte API
     const url = `https://www.nellobytesystems.com/APIAirtimeV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&MobileNetwork=${network}&Amount=${numericAmount}&MobileNumber=${phone}&RequestID=${requestID}&CallBackURL=${CALLBACK_URL}`;
-    const nellyResponse = await axios.get(url);
 
-    const raw = nellyResponse.data;
+    const response = await axios.get(url);
+    const raw = response.data;
 
-    // Parse response
-    let apiCode = null;
-    let statusText = "";
-    let remark = "";
+    console.log("📡 Nello Response:", raw);
 
-    if (typeof raw === "string") {
-      const parts = raw.split("|");
-      apiCode = parseInt(parts[0]);
-      statusText = parts[1];
-      remark = parts[2];
-    }
+    // Map final status
+    const finalStatus = mapNelloStatus(raw);
 
-    let status = "pending";
-
-    // Status mapping
-    if (apiCode === 200) status = "success";
-    else if (apiCode === 201 || (apiCode >= 600 && apiCode <= 699)) status = "pending";
-    else if ((apiCode >= 400 && apiCode <= 499) || apiCode === 299) status = "failed";
-    else if (apiCode >= 500 && apiCode <= 599) status = "cancelled";
-
-    // Update DB
-    await db`
+    // Update transaction status + store raw API response
+    await client`
       UPDATE transactions
-      SET status = ${status}, api_response = ${raw}
+      SET status = ${finalStatus}, api_response = ${raw}
       WHERE reference = ${requestID}
     `;
 
-    // Refund on failure/cancelled
-    if (status === "failed" || status === "cancelled") {
-      await db`UPDATE users SET balance = ${balanceBefore} WHERE id = ${req.user.id}`;
+    // If FAILED or CANCELLED → refund user
+    if (["failed", "cancelled"].includes(finalStatus)) {
+      await client`
+        UPDATE users SET balance = ${balanceBefore}
+        WHERE id = ${req.user.id}
+      `;
     }
 
     return res.json({
       success: true,
-      status,
+      status: finalStatus,
       requestID,
       apiResponse: raw,
-      balanceAfter: status === "success" ? balanceAfter : balanceBefore,
+      balanceAfter: finalStatus === "success" ? balanceAfter : balanceBefore,
     });
 
   } catch (err) {
-    console.error("❌ Airtime buy error:", err);
-    res.status(500).json({ error: "Server error", details: err.message });
+    console.error("❌ BUY AIRTIME ERROR:", err);
+    return res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
