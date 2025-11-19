@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const db = require("../config/db"); // postgres.js client
+const db = require("../config/db");
 const jwt = require("jsonwebtoken");
 
 const USER_ID = process.env.NELLO_USER_ID;
@@ -42,7 +42,7 @@ router.post("/buy", protect, async (req, res) => {
     if (numericAmount < 50)
       return res.status(400).json({ error: "Minimum amount is 50 Naira" });
 
-    // --- Fetch user ---
+    // Fetch user
     const userRows = await db`
       SELECT id, balance
       FROM users
@@ -57,66 +57,71 @@ router.post("/buy", protect, async (req, res) => {
 
     const balanceAfter = balanceBefore - numericAmount;
 
-    // --- Insert transaction as pending ---
+    // Insert transaction
     const requestID = "REQ" + Date.now();
-    const transactionData = {
-      user_id: req.user.id,
-      reference: requestID,
-      type: "airtime",
-      amount: numericAmount,
-      status: "pending",
-      created_at: new Date(),
-      api_amount: numericAmount,
-      network,
-      phone,
-      via: "wallet",
-      description: `Airtime purchase for ${phone}`,
-      balance_before: balanceBefore,
-      balance_after: balanceAfter,
-    };
+    await db`
+      INSERT INTO transactions (
+        user_id, reference, type, amount, status, created_at, 
+        api_amount, network, phone, via, description, 
+        balance_before, balance_after
+      ) VALUES (
+        ${req.user.id}, ${requestID}, 'airtime', ${numericAmount}, 'pending', ${new Date()},
+        ${numericAmount}, ${network}, ${phone}, 'wallet', ${`Airtime purchase for ${phone}`},
+        ${balanceBefore}, ${balanceAfter}
+      )
+    `;
 
-    await db`INSERT INTO transactions ${db(transactionData)}`;
-
-    // --- Deduct user balance ---
+    // Deduct user balance
     await db`UPDATE users SET balance = ${balanceAfter} WHERE id = ${req.user.id}`;
 
-    // --- Call NelloBytes API ---
+    // Call API
     const url = `https://www.nellobytesystems.com/APIAirtimeV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&MobileNetwork=${network}&Amount=${numericAmount}&MobileNumber=${phone}&RequestID=${requestID}&CallBackURL=${CALLBACK_URL}`;
-    const apiResponse = await axios.get(url);
+    const nellyResponse = await axios.get(url);
 
-    const apiData = apiResponse.data;
-    const apiCode = parseInt(apiData.STATUS_CODE);
-    let status = "pending"; // default
+    const raw = nellyResponse.data;
 
-    // --- Map NelloBytes STATUS_CODE to our DB status ---
+    // Parse response
+    let apiCode = null;
+    let statusText = "";
+    let remark = "";
+
+    if (typeof raw === "string") {
+      const parts = raw.split("|");
+      apiCode = parseInt(parts[0]);
+      statusText = parts[1];
+      remark = parts[2];
+    }
+
+    let status = "pending";
+
+    // Status mapping
     if (apiCode === 200) status = "success";
-    else if (apiCode === 201 || (apiCode >= 600 && apiCode <= 699)) status = "pending"; // retry/network issues
+    else if (apiCode === 201 || (apiCode >= 600 && apiCode <= 699)) status = "pending";
     else if ((apiCode >= 400 && apiCode <= 499) || apiCode === 299) status = "failed";
     else if (apiCode >= 500 && apiCode <= 599) status = "cancelled";
 
-    // --- Update transaction status ---
+    // Update DB
     await db`
       UPDATE transactions
-      SET status = ${status}, api_response = ${JSON.stringify(apiData)}
+      SET status = ${status}, api_response = ${raw}
       WHERE reference = ${requestID}
     `;
 
-    // --- Refund balance if failed or cancelled ---
+    // Refund on failure/cancelled
     if (status === "failed" || status === "cancelled") {
       await db`UPDATE users SET balance = ${balanceBefore} WHERE id = ${req.user.id}`;
     }
 
-    res.json({
+    return res.json({
       success: true,
-      message: "Airtime purchase processed",
-      transaction: transactionData,
-      requestID,
-      apiResponse: apiData,
-      balanceAfter: status === "success" ? balanceAfter : balanceBefore,
       status,
+      requestID,
+      apiResponse: raw,
+      balanceAfter: status === "success" ? balanceAfter : balanceBefore,
     });
+
   } catch (err) {
-    console.error("❌ Airtime buy error:", err.message);
+    console.error("❌ Airtime buy error:", err);
     res.status(500).json({ error: "Server error", details: err.message });
   }
 });
