@@ -1,13 +1,13 @@
 const express = require("express");
 const router = express.Router();
 const cors = require("cors");
-const db = require("../config/db"); // postgres.js client
+const db = require("../config/db"); 
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const adminAuth = require("../middleware/adminAuth");
 
 // ------------------------
-// Enable CORS
+// CORS
 // ------------------------
 router.use(
   cors({
@@ -18,10 +18,10 @@ router.use(
 );
 
 // ------------------------
-// TEST ENDPOINT
+// TEST ROUTE
 // ------------------------
 router.get("/login", (req, res) => {
-  res.send("✅ Admin login endpoint is live. Use POST to login.");
+  res.send("Admin route active. Use POST /login to authenticate.");
 });
 
 // ------------------------
@@ -51,28 +51,29 @@ router.post("/login", async (req, res) => {
 
     res.json({ message: "Login successful", token });
   } catch (err) {
-    console.error("❌ Admin login error:", err.message);
+    console.error("Admin login error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ------------------------
+// --------------------------------------------------
 // USERS MANAGEMENT
-// ------------------------
+// --------------------------------------------------
 router.get("/users", adminAuth, async (req, res) => {
   try {
-    const rows = await db`
+    const users = await db`
       SELECT id, first_name, last_name, email, balance, reward, role, created_at
       FROM users
       ORDER BY created_at DESC
     `;
-    res.json(rows);
+    res.json(users);
   } catch (err) {
-    console.error("❌ Fetch users error:", err.message);
+    console.error("Fetch users error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Update user (balance, reward, role)
 router.patch("/users/:id", adminAuth, async (req, res) => {
   const { balance, reward, role } = req.body;
 
@@ -91,18 +92,18 @@ router.patch("/users/:id", adminAuth, async (req, res) => {
     `;
     res.json({ message: "User updated successfully" });
   } catch (err) {
-    console.error("❌ Update user error:", err.message);
+    console.error("Update user error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ------------------------
-// TRANSACTIONS MANAGEMENT
-// ------------------------
+// --------------------------------------------------
+// TRANSACTIONS: FULL DETAILS FOR ADMIN
+// --------------------------------------------------
 router.get("/transactions", adminAuth, async (req, res) => {
   try {
     const rows = await db`
-      SELECT t.id, t.reference, t.type, t.amount, t.status, t.created_at,
+      SELECT t.*, 
              u.first_name, u.last_name, u.email
       FROM transactions t
       JOIN users u ON t.user_id = u.id
@@ -110,11 +111,12 @@ router.get("/transactions", adminAuth, async (req, res) => {
     `;
     res.json(rows);
   } catch (err) {
-    console.error("❌ Fetch transactions error:", err.message);
+    console.error("Fetch transactions error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Admin update transaction status
 router.patch("/transactions/:id", adminAuth, async (req, res) => {
   const { status } = req.body;
 
@@ -122,61 +124,63 @@ router.patch("/transactions/:id", adminAuth, async (req, res) => {
     return res.status(400).json({ error: "Invalid status" });
 
   try {
-    const transactions = await db`
+    const trx = await db`
       SELECT * FROM transactions WHERE id = ${req.params.id}
     `;
 
-    if (!transactions.length)
+    if (!trx.length)
       return res.status(404).json({ error: "Transaction not found" });
 
-    const transaction = transactions[0];
+    const t = trx[0];
 
-    if (transaction.status !== status) {
-      await db`
-        UPDATE transactions SET status = ${status} WHERE id = ${req.params.id}
-      `;
+    // Update DB
+    await db`
+      UPDATE transactions SET status = ${status} WHERE id = ${req.params.id}
+    `;
 
-      if (status === "success") {
-        if (transaction.type === "withdraw") {
-          await db`
-            UPDATE users SET balance = balance - ${transaction.amount} WHERE id = ${transaction.user_id}
-          `;
-        } else if (transaction.type === "fund") {
-          await db`
-            UPDATE users SET balance = balance + ${transaction.amount} WHERE id = ${transaction.user_id}
-          `;
-        }
+    // Reverse or apply balance if necessary
+    if (status === "success") {
+      if (t.type === "fund") {
+        await db`
+          UPDATE users SET balance = balance + ${t.amount} WHERE id = ${t.user_id}
+        `;
+      } else if (t.type === "withdraw") {
+        await db`
+          UPDATE users SET balance = balance - ${t.amount} WHERE id = ${t.user_id}
+        `;
       }
     }
 
     res.json({ message: "Transaction updated successfully" });
   } catch (err) {
-    console.error("❌ Update transaction error:", err.message);
+    console.error("Update transaction error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ------------------------
+// --------------------------------------------------
 // ANALYTICS
-// ------------------------
-router.get("/top-users", adminAuth, async (req, res) => {
+// --------------------------------------------------
+router.get("/analytics/overview", adminAuth, async (req, res) => {
   try {
-    const rows = await db`
-      SELECT CONCAT(u.first_name, ' ', u.last_name) AS name, SUM(t.amount) AS total
-      FROM transactions t
-      JOIN users u ON t.user_id = u.id
-      WHERE t.status = 'success'
-      GROUP BY t.user_id
-      ORDER BY total DESC
-      LIMIT 10
+    const totalUsers = await db`SELECT COUNT(*) FROM users`;
+    const totalTransactions = await db`SELECT COUNT(*) FROM transactions`;
+    const totalSuccessful = await db`
+      SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE status = 'success'
     `;
-    res.json(rows);
+
+    res.json({
+      users: totalUsers[0].count,
+      transactions: totalTransactions[0].count,
+      revenue: Number(totalSuccessful[0].total),
+    });
   } catch (err) {
-    console.error("❌ Top users error:", err.message);
+    console.error("Overview analytics error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// Income grouped by day, week, month
 router.get("/income", adminAuth, async (req, res) => {
   try {
     const range = req.query.range || "day";
@@ -192,6 +196,7 @@ router.get("/income", adminAuth, async (req, res) => {
     rows.forEach(r => {
       let key;
       const date = new Date(r.created_at);
+
       if (range === "week") {
         const week = Math.ceil((date.getDate() - date.getDay() + 1) / 7);
         key = `${date.getFullYear()}-W${week}`;
@@ -209,7 +214,7 @@ router.get("/income", adminAuth, async (req, res) => {
       totals: Object.values(grouped),
     });
   } catch (err) {
-    console.error("❌ Income analytics error:", err.message);
+    console.error("Income analytics error:", err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
