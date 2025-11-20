@@ -219,4 +219,20 @@ router.get("/income", adminAuth, async (req, res) => {
   }
 });
 
+// DELETE /api/admin/users/:id
+// Soft delete by setting a `deleted` flag (make sure your DB has it)
+router.delete("/users/:id", adminAuth, async (req, res) => {
+  try {
+    await db`
+      UPDATE users
+      SET deleted = TRUE
+      WHERE id = ${req.params.id}
+    `;
+    res.json({ message: "User deleted successfully" });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 module.exports = router;
