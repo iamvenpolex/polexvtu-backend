@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const cors = require("cors");
-const db = require("../config/db"); 
+const db = require("../config/db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const adminAuth = require("../middleware/adminAuth");
@@ -62,7 +62,7 @@ router.post("/login", async (req, res) => {
 router.get("/users", adminAuth, async (req, res) => {
   try {
     const users = await db`
-      SELECT id, first_name, last_name, email, phone, balance, reward, role, created_at
+      SELECT id, first_name, last_name, email, phone, balance, reward, role, created_at, deleted
       FROM users
       ORDER BY created_at DESC
     `;
@@ -73,23 +73,46 @@ router.get("/users", adminAuth, async (req, res) => {
   }
 });
 
-// Update user (balance, reward, role)
+// --------------------------------------------------
+// UPDATE USER (ADMIN CAN UPDATE ANY FIELD)
+// --------------------------------------------------
 router.patch("/users/:id", adminAuth, async (req, res) => {
-  const { balance, reward, role } = req.body;
+  const allowedFields = [
+    "first_name",
+    "last_name",
+    "email",
+    "phone",
+    "balance",
+    "reward",
+    "role",
+  ];
 
-  if (balance < 0 || reward < 0)
-    return res.status(400).json({ error: "Balance and reward cannot be negative" });
+  const updates = {};
 
-  const validRoles = ["user", "admin"];
-  if (role && !validRoles.includes(role))
+  for (const key of allowedFields) {
+    if (req.body[key] !== undefined) {
+      updates[key] = req.body[key];
+    }
+  }
+
+  if (!Object.keys(updates).length) {
+    return res.status(400).json({ error: "No valid fields to update" });
+  }
+
+  if (updates.balance !== undefined && updates.balance < 0)
+    return res.status(400).json({ error: "Balance cannot be negative" });
+
+  if (updates.reward !== undefined && updates.reward < 0)
+    return res.status(400).json({ error: "Reward cannot be negative" });
+
+  if (updates.role && !["user", "admin"].includes(updates.role))
     return res.status(400).json({ error: "Invalid role" });
 
   try {
     await db`
-      UPDATE users
-      SET balance = ${balance}, reward = ${reward}, role = ${role}
-      WHERE id = ${req.params.id}
+      UPDATE users SET ${db(updates)} WHERE id = ${req.params.id}
     `;
+
     res.json({ message: "User updated successfully" });
   } catch (err) {
     console.error("Update user error:", err.message);
@@ -98,7 +121,59 @@ router.patch("/users/:id", adminAuth, async (req, res) => {
 });
 
 // --------------------------------------------------
-// TRANSACTIONS: FULL DETAILS FOR ADMIN
+// SOFT DELETE USER (TEMPORARY DELETE)
+// --------------------------------------------------
+router.delete("/users/:id", adminAuth, async (req, res) => {
+  const userId = req.params.id;
+
+  try {
+    await db`
+      UPDATE users
+      SET 
+        deleted = TRUE,
+        first_name = 'Deleted',
+        last_name = 'User',
+        email = ${"deleted_" + userId + "@removed.com"},
+        phone = '00000000000',
+        balance = 0,
+        reward = 0,
+        password = ${bcrypt.hashSync("DELETED" + Date.now(), 10)}
+      WHERE id = ${userId}
+    `;
+
+    await db`
+      UPDATE transactions SET status = 'failed'
+      WHERE user_id = ${userId}
+    `;
+
+    res.json({ message: "User temporarily deleted & masked successfully" });
+  } catch (err) {
+    console.error("Delete user error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// --------------------------------------------------
+// RESTORE USER
+// --------------------------------------------------
+router.patch("/users/:id/restore", adminAuth, async (req, res) => {
+  const userId = req.params.id;
+
+  try {
+    await db`
+      UPDATE users SET deleted = FALSE
+      WHERE id = ${userId}
+    `;
+
+    res.json({ message: "User restored successfully" });
+  } catch (err) {
+    console.error("Restore user error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// --------------------------------------------------
+// TRANSACTIONS LIST
 // --------------------------------------------------
 router.get("/transactions", adminAuth, async (req, res) => {
   try {
@@ -109,6 +184,7 @@ router.get("/transactions", adminAuth, async (req, res) => {
       JOIN users u ON t.user_id = u.id
       ORDER BY t.created_at DESC
     `;
+
     res.json(rows);
   } catch (err) {
     console.error("Fetch transactions error:", err.message);
@@ -116,7 +192,9 @@ router.get("/transactions", adminAuth, async (req, res) => {
   }
 });
 
-// Admin update transaction status
+// --------------------------------------------------
+// UPDATE TRANSACTION — (❌ NO BALANCE UPDATE ❌)
+// --------------------------------------------------
 router.patch("/transactions/:id", adminAuth, async (req, res) => {
   const { status } = req.body;
 
@@ -131,27 +209,14 @@ router.patch("/transactions/:id", adminAuth, async (req, res) => {
     if (!trx.length)
       return res.status(404).json({ error: "Transaction not found" });
 
-    const t = trx[0];
-
-    // Update DB
+    // ONLY UPDATE TRANSACTION STATUS
     await db`
-      UPDATE transactions SET status = ${status} WHERE id = ${req.params.id}
+      UPDATE transactions
+      SET status = ${status}
+      WHERE id = ${req.params.id}
     `;
 
-    // Reverse or apply balance if necessary
-    if (status === "success") {
-      if (t.type === "fund") {
-        await db`
-          UPDATE users SET balance = balance + ${t.amount} WHERE id = ${t.user_id}
-        `;
-      } else if (t.type === "withdraw") {
-        await db`
-          UPDATE users SET balance = balance - ${t.amount} WHERE id = ${t.user_id}
-        `;
-      }
-    }
-
-    res.json({ message: "Transaction updated successfully" });
+    res.json({ message: "Transaction updated (no balance change)" });
   } catch (err) {
     console.error("Update transaction error:", err.message);
     res.status(500).json({ error: "Server error" });
@@ -166,7 +231,9 @@ router.get("/analytics/overview", adminAuth, async (req, res) => {
     const totalUsers = await db`SELECT COUNT(*) FROM users`;
     const totalTransactions = await db`SELECT COUNT(*) FROM transactions`;
     const totalSuccessful = await db`
-      SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE status = 'success'
+      SELECT COALESCE(SUM(amount),0) AS total
+      FROM transactions
+      WHERE status = 'success'
     `;
 
     res.json({
@@ -180,7 +247,7 @@ router.get("/analytics/overview", adminAuth, async (req, res) => {
   }
 });
 
-// Income grouped by day, week, month
+// Income grouping
 router.get("/income", adminAuth, async (req, res) => {
   try {
     const range = req.query.range || "day";
@@ -193,9 +260,9 @@ router.get("/income", adminAuth, async (req, res) => {
 
     let grouped = {};
 
-    rows.forEach(r => {
-      let key;
+    rows.forEach((r) => {
       const date = new Date(r.created_at);
+      let key;
 
       if (range === "week") {
         const week = Math.ceil((date.getDate() - date.getDay() + 1) / 7);
@@ -215,22 +282,6 @@ router.get("/income", adminAuth, async (req, res) => {
     });
   } catch (err) {
     console.error("Income analytics error:", err.message);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// DELETE /api/admin/users/:id
-// Soft delete by setting a `deleted` flag (make sure your DB has it)
-router.delete("/users/:id", adminAuth, async (req, res) => {
-  try {
-    await db`
-      UPDATE users
-      SET deleted = TRUE
-      WHERE id = ${req.params.id}
-    `;
-    res.json({ message: "User deleted successfully" });
-  } catch (err) {
-    console.error(err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
