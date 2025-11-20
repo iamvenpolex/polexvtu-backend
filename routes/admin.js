@@ -131,6 +131,12 @@ router.delete("/users/:id", adminAuth, async (req, res) => {
       UPDATE users
       SET 
         deleted = TRUE,
+        original_first_name = first_name,
+        original_last_name = last_name,
+        original_email = email,
+        original_phone = phone,
+        original_balance = balance,
+        original_reward = reward,
         first_name = 'Deleted',
         last_name = 'User',
         email = ${"deleted_" + userId + "@removed.com"},
@@ -161,7 +167,21 @@ router.patch("/users/:id/restore", adminAuth, async (req, res) => {
 
   try {
     await db`
-      UPDATE users SET deleted = FALSE
+      UPDATE users
+      SET 
+        deleted = FALSE,
+        first_name = original_first_name,
+        last_name = original_last_name,
+        email = original_email,
+        phone = original_phone,
+        balance = original_balance,
+        reward = original_reward,
+        original_first_name = NULL,
+        original_last_name = NULL,
+        original_email = NULL,
+        original_phone = NULL,
+        original_balance = NULL,
+        original_reward = NULL
       WHERE id = ${userId}
     `;
 
