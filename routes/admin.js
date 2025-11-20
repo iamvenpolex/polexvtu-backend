@@ -62,7 +62,7 @@ router.post("/login", async (req, res) => {
 router.get("/users", adminAuth, async (req, res) => {
   try {
     const users = await db`
-      SELECT id, first_name, last_name, email, balance, reward, role, created_at
+      SELECT id, first_name, last_name, email, phone, balance, reward, role, created_at
       FROM users
       ORDER BY created_at DESC
     `;
