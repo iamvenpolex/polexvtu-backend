@@ -85,10 +85,10 @@ router.post("/redeem", async (req, res) => {
     const cards = await db`
       SELECT * FROM gift_cards
       WHERE code = ${code} AND is_redeemed = FALSE AND expires_at > NOW()
+      LIMIT 1
     `;
 
     if (!cards || cards.length === 0) {
-      // Record failed attempt
       await db`
         INSERT INTO gift_card_history (gift_card_id, user_id, action, timestamp, balance_before, balance_after, reason)
         VALUES (NULL, ${userId}, 'failed', NOW(), NULL, NULL, 'Invalid or expired card')
@@ -98,27 +98,17 @@ router.post("/redeem", async (req, res) => {
 
     const card = cards[0];
 
-    // Get user's current balance
     const userRows = await db`SELECT balance FROM users WHERE id = ${userId}`;
     const userBalance = Number(userRows[0]?.balance || 0);
     const balanceBefore = userBalance;
     const balanceAfter = userBalance + Number(card.amount);
 
-    // Update user's balance
-    await db`
-      UPDATE users
-      SET balance = ${balanceAfter}
-      WHERE id = ${userId}
-    `;
-
-    // Mark gift card as redeemed
+    await db`UPDATE users SET balance = ${balanceAfter} WHERE id = ${userId}`;
     await db`
       UPDATE gift_cards
       SET is_redeemed = TRUE, redeemed_by = ${userId}, redeemed_at = NOW()
       WHERE id = ${card.id}
     `;
-
-    // Record in history
     await db`
       INSERT INTO gift_card_history (gift_card_id, user_id, action, timestamp, balance_before, balance_after, reason)
       VALUES (${card.id}, ${userId}, 'success', NOW(), ${balanceBefore}, ${balanceAfter}, 'Redeemed gift card')
@@ -152,16 +142,25 @@ router.get("/history", async (req, res) => {
   try {
     let rows;
     if (isAdmin) {
-      // Admin: Show all gift cards, including unredeemed, with redeemed_by info
+      // Admin: show all gift cards including unredeemed
       rows = await db`
-        SELECT g.id, g.code, g.amount, g.description, g.is_redeemed, g.redeemed_by, g.created_at AS timestamp
+        SELECT 
+          g.id,
+          g.code,
+          g.amount,
+          g.description,
+          g.is_redeemed,
+          g.redeemed_by,
+          g.created_at AS generated_at,
+          g.redeemed_at,
+          g.expires_at
         FROM gift_cards g
         ORDER BY g.created_at DESC
       `;
     } else {
-      // User: Show only their own history
+      // User: show their own history
       rows = await db`
-        SELECT h.*, g.code, g.amount, g.is_redeemed
+        SELECT h.*, g.code, g.amount, g.is_redeemed, g.redeemed_at, g.expires_at
         FROM gift_card_history h
         LEFT JOIN gift_cards g ON h.gift_card_id = g.id
         WHERE h.user_id = ${userId}
