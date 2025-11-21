@@ -17,13 +17,15 @@ router.use(
 );
 
 // ------------------------
-// ADMIN: Bulk Generate Gift Cards
+// ADMIN: Bulk Generate Gift Cards (max 5 per request)
 // ------------------------
 router.post("/admin/bulk", adminAuth, async (req, res) => {
   const { amount, quantity, expires_at, description, source } = req.body;
 
   if (!amount || !quantity || !expires_at)
     return res.status(400).json({ message: "Missing required fields" });
+
+  if (quantity > 5) return res.status(400).json({ message: "Max 5 codes per request" });
 
   try {
     const codes = [];
@@ -34,13 +36,22 @@ router.post("/admin/bulk", adminAuth, async (req, res) => {
 
     const insertedCards = [];
     for (const code of codes) {
-      const { rows } = await db`
+      const result = await db`
         INSERT INTO gift_cards (code, amount, expires_at, description, source)
         VALUES (${code}, ${amount}, ${expires_at}, ${description || "Gift Card"}, ${source || "manual"})
         RETURNING *
       `;
-      insertedCards.push(rows[0]);
-      console.log("Generated gift card:", rows[0]);
+      if (result && result.length > 0) {
+        insertedCards.push(result[0]);
+      }
+    }
+
+    // Record each generation in history for admin
+    for (const card of insertedCards) {
+      await db`
+        INSERT INTO gift_card_history (gift_card_id, user_id, action, timestamp, balance_before, balance_after, reason)
+        VALUES (${card.id}, NULL, 'generated', NOW(), NULL, NULL, 'Gift card created by admin')
+      `;
     }
 
     res.json({ message: "Bulk gift cards generated", cards: insertedCards });
@@ -71,24 +82,21 @@ router.post("/redeem", async (req, res) => {
   if (!code) return res.status(400).json({ message: "Code is required" });
 
   try {
-    const { rows } = await db`
+    const cards = await db`
       SELECT * FROM gift_cards
       WHERE code = ${code} AND is_redeemed = FALSE AND expires_at > NOW()
     `;
 
-    if (!rows.length) {
-      console.log("Invalid or expired gift card:", code);
-
-      // Record failed attempt in history
+    if (!cards || cards.length === 0) {
+      // Record failed attempt
       await db`
         INSERT INTO gift_card_history (gift_card_id, user_id, action, timestamp, balance_before, balance_after, reason)
         VALUES (NULL, ${userId}, 'failed', NOW(), NULL, NULL, 'Invalid or expired card')
       `;
-
       return res.status(400).json({ message: "Invalid, redeemed, or expired card" });
     }
 
-    const card = rows[0];
+    const card = cards[0];
 
     // Get user's current balance
     const userRows = await db`SELECT balance FROM users WHERE id = ${userId}`;
@@ -110,13 +118,12 @@ router.post("/redeem", async (req, res) => {
       WHERE id = ${card.id}
     `;
 
-    // Record in gift_card_history
+    // Record in history
     await db`
       INSERT INTO gift_card_history (gift_card_id, user_id, action, timestamp, balance_before, balance_after, reason)
       VALUES (${card.id}, ${userId}, 'success', NOW(), ${balanceBefore}, ${balanceAfter}, 'Redeemed gift card')
     `;
 
-    console.log(`Gift card ${code} redeemed by user ${userId}`);
     res.json({ message: "Gift card redeemed", amount: card.amount, balanceBefore, balanceAfter });
   } catch (err) {
     console.error("Error redeeming gift card:", err);
@@ -146,14 +153,14 @@ router.get("/history", async (req, res) => {
     let rows;
     if (isAdmin) {
       rows = await db`
-        SELECT h.*, g.code, g.amount
+        SELECT h.*, g.code, g.amount, g.is_redeemed, g.redeemed_by
         FROM gift_card_history h
         LEFT JOIN gift_cards g ON h.gift_card_id = g.id
         ORDER BY h.timestamp DESC
       `;
     } else {
       rows = await db`
-        SELECT h.*, g.code, g.amount
+        SELECT h.*, g.code, g.amount, g.is_redeemed
         FROM gift_card_history h
         LEFT JOIN gift_cards g ON h.gift_card_id = g.id
         WHERE h.user_id = ${userId}
@@ -161,7 +168,6 @@ router.get("/history", async (req, res) => {
       `;
     }
 
-    console.log(`Fetched gift card history for ${isAdmin ? "admin" : "user"}:`, rows.length, "records");
     res.json(rows);
   } catch (err) {
     console.error("Error fetching gift card history:", err);
