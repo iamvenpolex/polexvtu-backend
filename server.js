@@ -21,7 +21,7 @@ const pingRoutes = require("./routes/ping");
 const smsRoutes = require("./routes/sms"); 
 const airtimeRoutes = require("./routes/airtime");
 const bettingRoutes = require("./routes/betting");
-
+const giftcardsRoutes = require("./routes/giftcards");
 
 const app = express();
 
@@ -71,7 +71,7 @@ app.use("/api/ping", pingRoutes);
 app.use("/api/sms", smsRoutes); 
 app.use("/api/airtime", airtimeRoutes);  
 app.use("/api/betting", bettingRoutes);
-
+app.use("/api/giftcards", giftcardsRoutes);
 
 // ✅ Root + Health check
 app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));
