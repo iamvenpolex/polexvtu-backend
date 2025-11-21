@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const db = require("../config/db");
+const { protect } = require("../middleware/authMiddleware"); // <-- import auth middleware
 const router = express.Router();
 
 // -------------------------------------
@@ -74,22 +75,22 @@ async function refundUser(userId, amount) {
 
 // -------------------------------------
 // FUND BETTING WALLET
-// Hybrid Mode:
-// → Create pending transaction first
-// → Do not deduct user yet
-// → Callback determines final status
+// Protected route
 // -------------------------------------
-router.post("/fund-wallet", async (req, res) => {
+router.post("/fund-wallet", protect, async (req, res) => {
   const userId = req.user.id;
   const { bettingCompany, customerId, amount, requestId, callbackUrl } = req.body;
 
-  const balanceBefore = await getUserBalance(userId);
-
-  if (balanceBefore < Number(amount)) {
+  if (!bettingCompany || !customerId || !amount) {
     return res.status(400).json({
       success: false,
-      message: "Insufficient balance"
+      message: "Betting company, Customer ID, and Amount are required.",
     });
+  }
+
+  const balanceBefore = await getUserBalance(userId);
+  if (balanceBefore < Number(amount)) {
+    return res.status(400).json({ success: false, message: "Insufficient balance" });
   }
 
   const API_USER = process.env.NELLO_USER_ID;
@@ -117,7 +118,7 @@ router.post("/fund-wallet", async (req, res) => {
       message_id: api.OrderID
     });
 
-    res.json({
+    return res.json({
       success: true,
       status: "pending",
       message: "Transaction initiated",
@@ -139,16 +140,13 @@ router.post("/fund-wallet", async (req, res) => {
       api_response: { error: error.message }
     });
 
-    res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // -------------------------------------
-// CALLBACK HANDLER (NelloBytes Calls This)
-// Handles:
-//  - ORDER_RECEIVED → pending
-//  - ORDER_COMPLETED → success + deduct money
-//  - ORDER_CANCELLED → failed + refund user
+// CALLBACK HANDLER
+// Public route called by NelloBytes
 // -------------------------------------
 router.post("/callback", async (req, res) => {
   const data = req.body;
@@ -156,7 +154,6 @@ router.post("/callback", async (req, res) => {
   const status = data.Status;
 
   const trx = await updateTransactionStatus(orderId, status.toLowerCase(), data.Remark);
-
   if (!trx) return res.json({ message: "Transaction not found" });
 
   // If completed → deduct balance
@@ -168,7 +165,6 @@ router.post("/callback", async (req, res) => {
       UPDATE users SET balance = ${newBalance}
       WHERE id = ${trx.user_id}
     `;
-
     await db`
       UPDATE transactions SET balance_after = ${newBalance}
       WHERE reference = ${orderId}
@@ -178,51 +174,50 @@ router.post("/callback", async (req, res) => {
   // If cancelled → refund user
   if (status === "ORDER_CANCELLED") {
     const newBalance = await refundUser(trx.user_id, trx.amount);
-
     await db`
       UPDATE transactions SET balance_after = ${newBalance}
       WHERE reference = ${orderId}
     `;
   }
 
-  res.json({ success: true });
+  return res.json({ success: true });
 });
 
 // -------------------------------------
 // QUERY TRANSACTION
+// Protected route
 // -------------------------------------
-router.get("/query/:orderId", async (req, res) => {
+router.get("/query/:orderId", protect, async (req, res) => {
   const { orderId } = req.params;
 
   const API_USER = process.env.NELLO_USER_ID;
   const API_KEY = process.env.NELLO_API_KEY;
-
   const url = `https://www.nellobytesystems.com/APIQueryV1.asp?UserID=${API_USER}&APIKey=${API_KEY}&OrderID=${orderId}`;
 
   try {
     const response = await axios.get(url);
-    res.json(response.data);
+    return res.json(response.data);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    return res.status(500).json({ success: false, error: e.message });
   }
 });
 
 // -------------------------------------
 // VERIFY CUSTOMER
+// Public route
 // -------------------------------------
 router.get("/verify/:bettingCompany/:customerId", async (req, res) => {
   const { bettingCompany, customerId } = req.params;
 
   const API_USER = process.env.NELLO_USER_ID;
   const API_KEY = process.env.NELLO_API_KEY;
-
   const url = `https://www.nellobytesystems.com/APIVerifyBettingV1.asp?UserID=${API_USER}&APIKey=${API_KEY}&BettingCompany=${bettingCompany}&CustomerID=${customerId}`;
 
   try {
     const response = await axios.get(url);
-    res.json(response.data);
+    return res.json(response.data);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    return res.status(500).json({ success: false, error: e.message });
   }
 });
 
