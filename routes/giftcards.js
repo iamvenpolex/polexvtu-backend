@@ -41,9 +41,7 @@ router.post("/admin/bulk", adminAuth, async (req, res) => {
         VALUES (${code}, ${amount}, ${expires_at}, ${description || "Gift Card"}, ${source || "manual"})
         RETURNING *
       `;
-      if (result && result.length > 0) {
-        insertedCards.push(result[0]);
-      }
+      if (result && result.length > 0) insertedCards.push(result[0]);
     }
 
     // Record each generation in history for admin
@@ -122,7 +120,7 @@ router.post("/redeem", async (req, res) => {
 });
 
 // ------------------------
-// HISTORY: Admin & User
+// HISTORY: User (unchanged)
 // ------------------------
 router.get("/history", async (req, res) => {
   const authHeader = req.headers.authorization;
@@ -130,47 +128,50 @@ router.get("/history", async (req, res) => {
 
   const token = authHeader.split(" ")[1];
   let userId;
-  let isAdmin = false;
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     userId = decoded.id;
-    isAdmin = decoded.role === "admin";
   } catch (err) {
     return res.status(401).json({ message: "Token invalid or expired" });
   }
 
   try {
-    let rows;
-    if (isAdmin) {
-      // Admin: show all gift cards including unredeemed
-      rows = await db`
-        SELECT 
-          g.id,
-          g.code,
-          g.amount,
-          g.description,
-          g.is_redeemed,
-          g.redeemed_by,
-          g.created_at AS generated_at,
-          g.redeemed_at,
-          g.expires_at
-        FROM gift_cards g
-        ORDER BY g.created_at DESC
-      `;
-    } else {
-      // User: show their own history
-      rows = await db`
-        SELECT h.*, g.code, g.amount, g.is_redeemed, g.redeemed_at, g.expires_at
-        FROM gift_card_history h
-        LEFT JOIN gift_cards g ON h.gift_card_id = g.id
-        WHERE h.user_id = ${userId}
-        ORDER BY h.timestamp DESC
-      `;
-    }
-
+    const rows = await db`
+      SELECT h.*, g.code, g.amount, g.is_redeemed, g.redeemed_at, g.expires_at
+      FROM gift_card_history h
+      LEFT JOIN gift_cards g ON h.gift_card_id = g.id
+      WHERE h.user_id = ${userId}
+      ORDER BY h.timestamp DESC
+    `;
     res.json(rows);
   } catch (err) {
-    console.error("Error fetching gift card history:", err);
+    console.error("Error fetching user gift card history:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ------------------------
+// HISTORY: Admin (new route)
+// ------------------------
+router.get("/admin/all", adminAuth, async (req, res) => {
+  try {
+    const rows = await db`
+      SELECT 
+        g.id,
+        g.code,
+        g.amount,
+        g.description,
+        g.is_redeemed,
+        g.redeemed_by,
+        g.created_at AS generated_at,
+        g.redeemed_at,
+        g.expires_at
+      FROM gift_cards g
+      ORDER BY g.created_at DESC
+    `;
+    res.json(rows);
+  } catch (err) {
+    console.error("Error fetching all gift cards for admin:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
