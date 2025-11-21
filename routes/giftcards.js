@@ -152,13 +152,14 @@ router.get("/history", async (req, res) => {
   try {
     let rows;
     if (isAdmin) {
+      // Admin: Show all gift cards, including unredeemed, with redeemed_by info
       rows = await db`
-        SELECT h.*, g.code, g.amount, g.is_redeemed, g.redeemed_by
-        FROM gift_card_history h
-        LEFT JOIN gift_cards g ON h.gift_card_id = g.id
-        ORDER BY h.timestamp DESC
+        SELECT g.id, g.code, g.amount, g.description, g.is_redeemed, g.redeemed_by, g.created_at AS timestamp
+        FROM gift_cards g
+        ORDER BY g.created_at DESC
       `;
     } else {
+      // User: Show only their own history
       rows = await db`
         SELECT h.*, g.code, g.amount, g.is_redeemed
         FROM gift_card_history h
