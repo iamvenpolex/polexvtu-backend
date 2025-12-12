@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const db = require("../config/db");
-const { protect } = require("../middleware/authMiddleware"); 
+const { protect } = require("../middleware/authMiddleware"); // <-- import auth middleware
 const router = express.Router();
 
 // -------------------------------------
@@ -207,30 +207,7 @@ router.get("/query/:orderId", protect, async (req, res) => {
 // Public route
 // -------------------------------------
 router.get("/verify/:bettingCompany/:customerId", async (req, res) => {
-  let { bettingCompany, customerId } = req.params;
-
-  // Map frontend value to correct API code (case-sensitive)
-  const bettingCompaniesMap = {
-    msport: "MSPORT",
-    naijabet: "NAIJABET",
-    nairabet: "NAIRABET",
-    "bet9ja-agent": "BET9JA-AGENT",
-    betland: "BETLAND",
-    betlion: "BETLION",
-    supabet: "SUPABET",
-    bet9ja: "BET9JA",
-    bangbet: "BANGBET",
-    betking: "BETKING",
-    "1xbet": "1XBET",
-    betway: "BETWAY",
-    merrybet: "MERRYBET",
-    mlotto: "MLOTTO",
-    "western-lotto": "WESTERN-LOTTO",
-    hallabet: "HALLABET",
-    "green-lotto": "GREEN-LOTTO",
-  };
-
-  bettingCompany = bettingCompaniesMap[bettingCompany.toLowerCase()] || bettingCompany;
+  const { bettingCompany, customerId } = req.params;
 
   const API_USER = process.env.NELLO_USER_ID;
   const API_KEY = process.env.NELLO_API_KEY;
@@ -238,14 +215,7 @@ router.get("/verify/:bettingCompany/:customerId", async (req, res) => {
 
   try {
     const response = await axios.get(url);
-
-    const customerName = response.data.customer_name;
-    const isValid = customerName && !customerName.toLowerCase().includes("error");
-
-    return res.json({
-      customer_name: customerName,
-      valid: isValid,
-    });
+    return res.json(response.data);
   } catch (e) {
     return res.status(500).json({ success: false, error: e.message });
   }
