@@ -33,48 +33,68 @@ const protect = (req, res, next) => {
 // ------------------------
 function mapNelloStatus(raw) {
   const { statuscode, status } = raw;
-
-  if (statuscode === "200") return "success";
-  if (statuscode === "100") return "pending";  // ORDER RECEIVED
-  if (statuscode === "201") return "pending";  // ORDER ON HOLD
-  if (statuscode === "402") return "failed";   // Vendor insufficient balance
+  if (statuscode === "200" || status === "ORDER_COMPLETED") return "success";
+  if (statuscode === "100" || statuscode === "201" || status === "ORDER_RECEIVED" || status === "ORDER_ONHOLD") return "pending";
+  if (statuscode === "402" || status === "ORDER_FAILED") return "failed";
   if (status === "ORDER_CANCELLED") return "cancelled";
-
   return "failed";
 }
 
 // ------------------------
-// Buy Airtime Route
+// In-memory queue for async API calls
+// ------------------------
+const airtimeQueue = [];
+let isProcessingQueue = false;
+
+async function processQueue() {
+  if (isProcessingQueue) return;
+  isProcessingQueue = true;
+
+  while (airtimeQueue.length > 0) {
+    const tx = airtimeQueue.shift();
+    try {
+      const url = `https://www.nellobytesystems.com/APIAirtimeV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&MobileNetwork=${tx.network}&Amount=${tx.amount}&MobileNumber=${tx.phone}&RequestID=${tx.reference}&CallBackURL=${CALLBACK_URL}${tx.bonusType ? `&BonusType=${tx.bonusType}` : ""}`;
+      const response = await axios.get(url);
+      const raw = response.data;
+      console.log(`📡 Processed queued transaction ${tx.reference}:`, raw);
+
+      // Update transaction in DB
+      await db`
+        UPDATE transactions
+        SET api_response = ${JSON.stringify(raw)}
+        WHERE reference = ${tx.reference}
+      `;
+    } catch (err) {
+      console.error(`❌ Queue failed for ${tx.reference}:`, err.message);
+      // Push it back to retry later
+      airtimeQueue.push(tx);
+      await new Promise((r) => setTimeout(r, 5000)); // wait 5s before retry
+    }
+  }
+
+  isProcessingQueue = false;
+}
+
+// ------------------------
+// Buy Airtime Route (enqueue instead of calling API synchronously)
 // ------------------------
 router.post("/buy", protect, async (req, res) => {
-  const client = db; // postgres.js client
-
   try {
-    const { network, amount, phone } = req.body;
-
-    if (!network || !amount || !phone)
-      return res.status(400).json({ error: "All fields are required" });
+    const { network, amount, phone, bonusType } = req.body;
+    if (!network || !amount || !phone) return res.status(400).json({ error: "All fields are required" });
 
     const numericAmount = Number(amount);
-    if (numericAmount < 50)
-      return res.status(400).json({ error: "Minimum amount is 50 Naira" });
+    if (numericAmount < 50) return res.status(400).json({ error: "Minimum amount is 50 Naira" });
 
-    // Fetch user
-    const [user] = await client`
-      SELECT id, balance FROM users WHERE id = ${req.user.id}
-    `;
+    const [user] = await db`SELECT id, balance FROM users WHERE id = ${req.user.id}`;
     if (!user) return res.status(404).json({ error: "User not found" });
+    if (user.balance < numericAmount) return res.status(400).json({ error: "Insufficient wallet balance" });
 
     const balanceBefore = Number(user.balance);
-    if (balanceBefore < numericAmount)
-      return res.status(400).json({ error: "Insufficient wallet balance" });
-
     const balanceAfter = balanceBefore - numericAmount;
     const requestID = "REQ" + Date.now();
 
-    // --- Start transaction (atomic operations) ---
-    await client.begin(async (sql) => {
-      // Insert pending transaction
+    await db.begin(async (sql) => {
       await sql`
         INSERT INTO transactions (
           user_id, reference, type, amount, status, created_at,
@@ -87,51 +107,90 @@ router.post("/buy", protect, async (req, res) => {
           ${balanceBefore}, ${balanceAfter}
         )
       `;
-
-      // Deduct balance
-      await sql`
-        UPDATE users SET balance = ${balanceAfter} WHERE id = ${req.user.id}
-      `;
+      await sql`UPDATE users SET balance = ${balanceAfter} WHERE id = ${req.user.id}`;
     });
-    // --- End atomic block ---
 
-    // Call NelloByte API
-    const url = `https://www.nellobytesystems.com/APIAirtimeV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&MobileNetwork=${network}&Amount=${numericAmount}&MobileNumber=${phone}&RequestID=${requestID}&CallBackURL=${CALLBACK_URL}`;
+    // Add to queue
+    airtimeQueue.push({ reference: requestID, network, amount: numericAmount, phone, bonusType });
+    processQueue(); // start processing in background
 
-    const response = await axios.get(url);
-    const raw = response.data;
-
-    console.log("📡 Nello Response:", raw);
-
-    // Map final status
-    const finalStatus = mapNelloStatus(raw);
-
-    // Update transaction status + store raw API response
-    await client`
-      UPDATE transactions
-      SET status = ${finalStatus}, api_response = ${raw}
-      WHERE reference = ${requestID}
-    `;
-
-    // If FAILED or CANCELLED → refund user
-    if (["failed", "cancelled"].includes(finalStatus)) {
-      await client`
-        UPDATE users SET balance = ${balanceBefore}
-        WHERE id = ${req.user.id}
-      `;
-    }
-
-    return res.json({
+    res.json({
       success: true,
-      status: finalStatus,
+      status: "pending",
       requestID,
-      apiResponse: raw,
-      balanceAfter: finalStatus === "success" ? balanceAfter : balanceBefore,
+      balanceAfter,
+      message: "Transaction queued. Final status will be updated via callback.",
     });
-
   } catch (err) {
     console.error("❌ BUY AIRTIME ERROR:", err);
     return res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
+// ------------------------
+// Callback & sync routes remain the same
+// ------------------------
+router.get("/callback", async (req, res) => {
+  try {
+    const { orderid, requestid, statuscode, orderstatus } = req.query;
+    const ref = requestid || orderid;
+    const finalStatus = mapNelloStatus({ statuscode, status: orderstatus });
+
+    await db.begin(async (sql) => {
+      await sql`
+        UPDATE transactions
+        SET status = ${finalStatus}, api_response = ${JSON.stringify(req.query)}
+        WHERE reference = ${ref}
+      `;
+      if (["failed", "cancelled"].includes(finalStatus)) {
+        const [tx] = await sql`SELECT user_id, balance_before FROM transactions WHERE reference = ${ref}`;
+        if (tx) {
+          await sql`UPDATE users SET balance = ${tx.balance_before} WHERE id = ${tx.user_id}`;
+        }
+      }
+    });
+
+    res.send("OK");
+  } catch (err) {
+    console.error("❌ CALLBACK ERROR:", err);
+    res.status(500).send("ERROR");
+  }
+});
+
+router.post("/sync", protect, async (req, res) => {
+  try {
+    const pendingTx = await db`
+      SELECT reference, network, phone, amount
+      FROM transactions
+      WHERE user_id = ${req.user.id} AND status = 'pending'
+    `;
+    for (const tx of pendingTx) {
+      try {
+        const url = `https://www.nellobytesystems.com/APIQueryV1.asp?UserID=${USER_ID}&APIKey=${API_KEY}&RequestID=${tx.reference}`;
+        const response = await axios.get(url);
+        const raw = response.data;
+        const finalStatus = mapNelloStatus(raw);
+
+        await db.begin(async (sql) => {
+          await sql`
+            UPDATE transactions
+            SET status = ${finalStatus}, api_response = ${JSON.stringify(raw)}
+            WHERE reference = ${tx.reference}
+          `;
+          if (["failed", "cancelled"].includes(finalStatus)) {
+            const [user] = await sql`SELECT balance FROM users WHERE id = ${req.user.id}`;
+            const newBalance = user.balance + tx.amount;
+            await sql`UPDATE users SET balance = ${newBalance} WHERE id = ${req.user.id}`;
+          }
+        });
+      } catch (errTx) {
+        console.error(`❌ Failed to sync transaction ${tx.reference}:`, errTx.message);
+      }
+    }
+    res.json({ success: true, updated: pendingTx.length });
+  } catch (err) {
+    console.error("❌ SYNC ERROR:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
