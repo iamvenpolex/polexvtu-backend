@@ -24,7 +24,6 @@ router.post("/pay", async (req, res) => {
     const userRows = await db`
       SELECT balance FROM users WHERE id = ${user_id}
     `;
-
     if (!userRows || userRows.length === 0 || userRows[0].balance < amount) {
       return res.status(400).json({ success: false, message: "Insufficient wallet balance" });
     }
@@ -48,13 +47,21 @@ router.post("/pay", async (req, res) => {
     console.log("EasyAccess PAY API Response:", JSON.stringify(data, null, 2));
 
     const success = data.success === true || data.success === "true";
+    const tokenValue = data.message?.token || data.message?.mainToken || data.message?.Token || null;
 
     if (success) {
-      const token = data.message.token || data.message.mainToken || data.message.Token || null;
+      // ✅ Save token in tokens table if available
+      if (tokenValue) {
+        await db`
+          INSERT INTO tokens (user_id, provider, transaction_type, token_value, amount)
+          VALUES (${user_id}, ${company}, 'electricity', ${tokenValue}, ${amount})
+        `;
+      }
+
       return res.json({
         success: true,
         message: "Payment successful",
-        token,
+        token: tokenValue,
         full_response: data,
       });
     } else {
@@ -62,7 +69,6 @@ router.post("/pay", async (req, res) => {
       await db`
         UPDATE users SET balance = ${balanceBefore} WHERE id = ${user_id}
       `;
-
       return res.status(400).json({
         success: false,
         message: data.message || "Transaction failed",
@@ -71,7 +77,6 @@ router.post("/pay", async (req, res) => {
     }
   } catch (err) {
     console.error("Electricity pay error:", err.response?.data || err.message);
-
     return res.status(500).json({
       success: false,
       message: "Internal Server Error",
@@ -93,7 +98,6 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ success: false, message: "Minimum amount is ₦1000" });
     }
 
-    // ✅ Call EasyAccess Verify API
     const response = await axios.post(
       "https://easyaccessapi.com.ng/api/verifyelectricity.php",
       { company, metertype, meterno, amount },
@@ -106,7 +110,7 @@ router.post("/verify", async (req, res) => {
     const success = data.success === true || data.success === "true";
 
     if (success) {
-      const customer_name = data.message.content?.Customer_Name || null;
+      const customer_name = data.message?.content?.Customer_Name || null;
       return res.json({
         success: true,
         message: "Meter verified successfully",
@@ -122,12 +126,30 @@ router.post("/verify", async (req, res) => {
     }
   } catch (err) {
     console.error("Electricity verify error:", err.response?.data || err.message);
-
     return res.status(500).json({
       success: false,
       message: "Internal Server Error",
       error: err.response?.data || err.message,
     });
+  }
+});
+
+// --------------------- FETCH ELECTRICITY HISTORY ---------------------
+router.get("/history/:user_id", async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    const rows = await db`
+      SELECT id, provider, transaction_type, token_value, reference, amount, status, created_at
+      FROM tokens
+      WHERE user_id = ${user_id} AND transaction_type = 'electricity'
+      ORDER BY created_at DESC
+    `;
+
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error("GET /tokens/history error:", err);
+    return res.status(500).json({ success: false, message: "Failed to fetch history" });
   }
 });
 
