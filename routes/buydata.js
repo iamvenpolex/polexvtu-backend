@@ -5,7 +5,7 @@ const axios = require("axios");
 const router = express.Router();
 const db = require("../config/db"); // postgres.js instance
 
-const BASE_URL = "https://easyaccessapi.com.ng/api/data.php";
+const BASE_URL = "https://easyaccessapi.com.ng/api/live/v1/purchase-data";
 const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
 
 router.post("/", async (req, res) => {
@@ -22,37 +22,29 @@ router.post("/", async (req, res) => {
   try {
     // 🔒 TRANSACTION START
     const result = await db.begin(async (tx) => {
-      // Prevent duplicate reference
+
       const dup = await tx`
         SELECT id FROM transactions WHERE reference = ${client_reference}
       `;
-      if (dup.length) {
-        throw new Error("DUPLICATE_REFERENCE");
-      }
+      if (dup.length) throw new Error("DUPLICATE_REFERENCE");
 
-      // Lock user row
       const users = await tx`
         SELECT id, balance 
         FROM users 
         WHERE id = ${user_id}
         FOR UPDATE
       `;
-      if (!users.length) {
-        throw new Error("USER_NOT_FOUND");
-      }
+      if (!users.length) throw new Error("USER_NOT_FOUND");
 
       const user = users[0];
 
-      // Fetch plan
       const plans = await tx`
         SELECT plan_name, custom_price
         FROM custom_data_prices
         WHERE plan_id = ${dataplan}
         AND status = 'active'
       `;
-      if (!plans.length) {
-        throw new Error("PLAN_NOT_AVAILABLE");
-      }
+      if (!plans.length) throw new Error("PLAN_NOT_AVAILABLE");
 
       const plan = plans[0];
       const price = Number(plan.custom_price);
@@ -64,14 +56,12 @@ router.post("/", async (req, res) => {
       const balance_before = Number(user.balance);
       const balance_after = balance_before - price;
 
-      // Deduct wallet
       await tx`
         UPDATE users 
         SET balance = ${balance_after}
         WHERE id = ${user.id}
       `;
 
-      // Insert pending transaction
       await tx`
         INSERT INTO transactions (
           user_id, reference, type, amount, api_amount, status,
@@ -87,38 +77,45 @@ router.post("/", async (req, res) => {
 
       return { user, plan, price, balance_before };
     });
-    // 🔓 TRANSACTION COMMIT HERE
 
-    // Call EasyAccess API
-    const params = new URLSearchParams({
-      network,
-      mobileno: mobile_no,
-      dataplan,
-      client_reference,
-      max_amount_payable: result.price.toString(),
-      webhook_url: "https://polexvtu-backend.onrender.com/buydata/webhook",
-    });
-
+    // =========================
+    // CALL EASYACCESS API
+    // =========================
     let response;
+
     try {
-      response = await axios.post(BASE_URL, params.toString(), {
-        headers: {
-          AuthorizationToken: API_TOKEN,
-          "Content-Type": "application/x-www-form-urlencoded",
+      response = await axios.post(
+        BASE_URL,
+        {
+          network,
+          dataplan,
+          mobileno: mobile_no,
+          client_reference,
+          max_amount_payable: result.price,
         },
-        timeout: 15000,
-      });
+        {
+          headers: {
+            Authorization: `Bearer ${API_TOKEN}`,
+            "Cache-Control": "no-cache",
+          },
+          timeout: 15000,
+        }
+      );
     } catch (apiErr) {
-      // Refund on API failure
       await db.begin(async (tx) => {
         await tx`
           UPDATE users 
           SET balance = ${result.balance_before}
           WHERE id = ${result.user.id}
         `;
+
         await tx`
           UPDATE transactions 
-          SET status = 'failed'
+          SET status = 'failed',
+              api_response = ${JSON.stringify({
+                error: "API_REQUEST_FAILED",
+                message: apiErr.message,
+              })}
           WHERE reference = ${client_reference}
         `;
       });
@@ -130,13 +127,35 @@ router.post("/", async (req, res) => {
     }
 
     const ea = response.data;
-    const status = ea?.status?.toLowerCase();
 
-    if (status === "successful") {
+    // =========================
+    // LOG API RESPONSE (IMPORTANT PART)
+    // =========================
+    const apiLog = {
+      code: ea?.code,
+      status: ea?.status,
+      message: ea?.message,
+      reference: ea?.reference,
+      amount: ea?.amount,
+      network: ea?.network,
+      mobileno: ea?.mobileno,
+      dataplan: ea?.dataplan,
+      true_response: ea?.true_response,
+      client_reference: ea?.client_reference,
+      transaction_date: ea?.transaction_date,
+    };
+
+    const isSuccess = ea?.status === "success" || ea?.code === 200;
+
+    // =========================
+    // SUCCESS
+    // =========================
+    if (isSuccess) {
       await db`
         UPDATE transactions
         SET status = 'success',
-            api_amount = ${ea.amount || 0}
+            api_amount = ${ea.amount || 0},
+            api_response = ${JSON.stringify(apiLog)}
         WHERE reference = ${client_reference}
       `;
 
@@ -147,25 +166,30 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Refund if API failed logically
+    // =========================
+    // FAILED RESPONSE FROM API
+    // =========================
     await db.begin(async (tx) => {
       await tx`
         UPDATE users 
         SET balance = ${result.balance_before}
         WHERE id = ${result.user.id}
       `;
+
       await tx`
         UPDATE transactions 
         SET status = 'failed',
-            api_amount = ${ea.amount || 0}
+            api_amount = ${ea.amount || 0},
+            api_response = ${JSON.stringify(apiLog)}
         WHERE reference = ${client_reference}
       `;
     });
 
     return res.json({
       success: false,
-      message: "Purchase failed",
+      message: ea?.message || "Purchase failed",
     });
+
   } catch (err) {
     if (err.message === "DUPLICATE_REFERENCE") {
       return res.status(409).json({ success: false, message: "Duplicate reference" });

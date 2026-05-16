@@ -4,7 +4,7 @@ const db = require("../config/db"); // postgres.js client
 const router = express.Router();
 
 const API_TOKEN = "3b2a7b74bc8bbe0878460122869864c5";
-const BASE_URL = "https://easyaccessapi.com.ng/api";
+const BASE_URL = "https://easyaccessapi.com.ng/api/live/v1";
 
 // ========================
 // CONFIG: PRICE RULE
@@ -35,11 +35,11 @@ router.get("/plans/:product_type", async (req, res) => {
     console.log("🔹 Fetching plans for product_type:", product_type);
 
     const response = await axios.get(
-      `${BASE_URL}/get_plans.php?product_type=${product_type}`,
+      `${BASE_URL}/get-plans?product_type=${product_type}`,
       {
         headers: {
-          AuthorizationToken: API_TOKEN,
-          "Content-Type": "application/json",
+          Authorization: `Bearer ${API_TOKEN}`,
+          "Cache-Control": "no-cache",
         },
       }
     );
@@ -66,9 +66,7 @@ router.get("/plans/:product_type", async (req, res) => {
 
     const plansWithCustomPrice = apiPlans.map((p) => {
       const apiPrice = Number(p.price);
-
       const savedCustom = priceMap[p.plan_id];
-
       const safeCustomPrice = enforceMinimumPrice(apiPrice, savedCustom);
 
       return {
@@ -117,12 +115,11 @@ router.post("/plans/custom-price", async (req, res) => {
   }
 
   try {
-    // Get provider price first
     const apiResponse = await axios.get(
-      `${BASE_URL}/get_plans.php?product_type=${product_type}`,
+      `${BASE_URL}/get-plans?product_type=${product_type}`,
       {
         headers: {
-          AuthorizationToken: API_TOKEN,
+          Authorization: `Bearer ${API_TOKEN}`,
         },
       }
     );
@@ -135,7 +132,6 @@ router.post("/plans/custom-price", async (req, res) => {
       [];
 
     const plan = apiPlans.find((p) => p.plan_id === plan_id);
-
     const apiPrice = plan ? Number(plan.price) : 0;
 
     const safePrice = enforceMinimumPrice(apiPrice, Number(custom_price));
@@ -191,11 +187,12 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
   }
 
   try {
-    // fetch provider prices once (OPTIMIZED)
     const apiResponse = await axios.get(
-      `${BASE_URL}/get_plans.php?product_type=${product_type}`,
+      `${BASE_URL}/get-plans?product_type=${product_type}`,
       {
-        headers: { AuthorizationToken: API_TOKEN },
+        headers: {
+          Authorization: `Bearer ${API_TOKEN}`,
+        },
       }
     );
 
@@ -216,7 +213,6 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
       if (!plan_id || custom_price == null) continue;
 
       const apiPrice = apiMap[plan_id] || 0;
-
       const safePrice = enforceMinimumPrice(apiPrice, Number(custom_price));
 
       const existing = await db`
@@ -246,7 +242,7 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
       message: "All custom prices updated successfully",
     });
   } catch (err) {
-    console.error("❌ Bulk custom price update error:", err.message);
+    console.error("❌ Bulk custom price error:", err.message);
     res.status(500).json({
       success: false,
       message: "Failed to update custom prices",
