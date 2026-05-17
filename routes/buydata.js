@@ -3,34 +3,53 @@
 const express = require("express");
 const axios = require("axios");
 const router = express.Router();
-const db = require("../config/db"); // postgres.js instance
+const db = require("../config/db");
 
 const BASE_URL = "https://easyaccessapi.com.ng/api/live/v1/purchase-data";
 const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
 
+/**
+ * BUY DATA ROUTE
+ */
 router.post("/", async (req, res) => {
-  const { user_id, network, mobile_no, dataplan, client_reference } = req.body;
+  const {
+    user_id,
+    network,
+    mobile_no,
+    dataplan,
+    client_reference,
+  } = req.body;
 
+  // =========================
+  // VALIDATION
+  // =========================
   if (!user_id || !network || !mobile_no || !dataplan || !client_reference) {
-    return res.status(400).json({ success: false, message: "Missing required fields" });
+    return res.status(400).json({
+      success: false,
+      message: "Missing required fields",
+    });
   }
 
   if (!/^\d{11}$/.test(mobile_no)) {
-    return res.status(400).json({ success: false, message: "Mobile number must be 11 digits" });
+    return res.status(400).json({
+      success: false,
+      message: "Mobile number must be 11 digits",
+    });
   }
 
   try {
-    // 🔒 TRANSACTION START
+    // =========================
+    // DB TRANSACTION (LOCK USER)
+    // =========================
     const result = await db.begin(async (tx) => {
-
       const dup = await tx`
         SELECT id FROM transactions WHERE reference = ${client_reference}
       `;
       if (dup.length) throw new Error("DUPLICATE_REFERENCE");
 
       const users = await tx`
-        SELECT id, balance 
-        FROM users 
+        SELECT id, balance
+        FROM users
         WHERE id = ${user_id}
         FOR UPDATE
       `;
@@ -57,21 +76,41 @@ router.post("/", async (req, res) => {
       const balance_after = balance_before - price;
 
       await tx`
-        UPDATE users 
+        UPDATE users
         SET balance = ${balance_after}
         WHERE id = ${user.id}
       `;
 
       await tx`
         INSERT INTO transactions (
-          user_id, reference, type, amount, api_amount, status,
-          network, plan, phone, via, description,
-          balance_before, balance_after
-        ) VALUES (
-          ${user.id}, ${client_reference}, 'data', ${price}, 0, 'pending',
-          ${network}, ${plan.plan_name}, ${mobile_no}, 'wallet',
-          ${"Data purchase of " + plan.plan_name},
-          ${balance_before}, ${balance_after}
+          user_id,
+          reference,
+          type,
+          amount,
+          api_amount,
+          status,
+          network,
+          plan,
+          phone,
+          via,
+          description,
+          balance_before,
+          balance_after
+        )
+        VALUES (
+          ${user.id},
+          ${client_reference},
+          'data',
+          ${price},
+          0,
+          'pending',
+          ${network},
+          ${plan.plan_name},
+          ${mobile_no},
+          'wallet',
+          ${"Data purchase " + plan.plan_name},
+          ${balance_before},
+          ${balance_after}
         )
       `;
 
@@ -84,11 +123,13 @@ router.post("/", async (req, res) => {
     let response;
 
     try {
+      console.log("📡 Sending request to EasyAccess...");
+
       response = await axios.post(
         BASE_URL,
         {
-          network,
-          dataplan,
+          network: Number(network), // IMPORTANT FIX
+          dataplan: Number(dataplan),
           mobileno: mobile_no,
           client_reference,
           max_amount_payable: result.price,
@@ -97,20 +138,25 @@ router.post("/", async (req, res) => {
           headers: {
             Authorization: `Bearer ${API_TOKEN}`,
             "Cache-Control": "no-cache",
+            "Content-Type": "application/json",
           },
-          timeout: 15000,
+          timeout: 30000,
         }
       );
+
+      console.log("📡 EasyAccess Response:", response.data);
     } catch (apiErr) {
+      console.error("❌ API ERROR:", apiErr.response?.data || apiErr.message);
+
       await db.begin(async (tx) => {
         await tx`
-          UPDATE users 
+          UPDATE users
           SET balance = ${result.balance_before}
           WHERE id = ${result.user.id}
         `;
 
         await tx`
-          UPDATE transactions 
+          UPDATE transactions
           SET status = 'failed',
               api_response = ${JSON.stringify({
                 error: "API_REQUEST_FAILED",
@@ -129,11 +175,14 @@ router.post("/", async (req, res) => {
     const ea = response.data;
 
     // =========================
-    // LOG API RESPONSE (IMPORTANT PART)
+    // STATUS HANDLING
     // =========================
+    const code = Number(ea?.code);
+    const status = ea?.status?.toLowerCase();
+
     const apiLog = {
-      code: ea?.code,
-      status: ea?.status,
+      code,
+      status,
       message: ea?.message,
       reference: ea?.reference,
       amount: ea?.amount,
@@ -145,12 +194,10 @@ router.post("/", async (req, res) => {
       transaction_date: ea?.transaction_date,
     };
 
-    const isSuccess = ea?.status === "success" || ea?.code === 200;
-
     // =========================
     // SUCCESS
     // =========================
-    if (isSuccess) {
+    if (code === 200 && status === "success") {
       await db`
         UPDATE transactions
         SET status = 'success',
@@ -161,23 +208,41 @@ router.post("/", async (req, res) => {
 
       return res.json({
         success: true,
-        message: "Purchase successful",
+        message: ea.message,
         reference: client_reference,
       });
     }
 
     // =========================
-    // FAILED RESPONSE FROM API
+    // PENDING
+    // =========================
+    if (status === "pending") {
+      await db`
+        UPDATE transactions
+        SET status = 'pending',
+            api_response = ${JSON.stringify(apiLog)}
+        WHERE reference = ${client_reference}
+      `;
+
+      return res.json({
+        success: true,
+        message: "Transaction is processing",
+        reference: client_reference,
+      });
+    }
+
+    // =========================
+    // FAILED (REFUND USER)
     // =========================
     await db.begin(async (tx) => {
       await tx`
-        UPDATE users 
+        UPDATE users
         SET balance = ${result.balance_before}
         WHERE id = ${result.user.id}
       `;
 
       await tx`
-        UPDATE transactions 
+        UPDATE transactions
         SET status = 'failed',
             api_amount = ${ea.amount || 0},
             api_response = ${JSON.stringify(apiLog)}
@@ -185,23 +250,41 @@ router.post("/", async (req, res) => {
       `;
     });
 
-    return res.json({
+    return res.status(400).json({
       success: false,
-      message: ea?.message || "Purchase failed",
+      message: ea.message || "Purchase failed",
     });
-
   } catch (err) {
+    console.error("DATA PURCHASE ERROR:", err);
+
     if (err.message === "DUPLICATE_REFERENCE") {
-      return res.status(409).json({ success: false, message: "Duplicate reference" });
-    }
-    if (err.message === "INSUFFICIENT_BALANCE") {
-      return res.status(400).json({ success: false, message: "Insufficient balance" });
-    }
-    if (err.message === "USER_NOT_FOUND") {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res.status(409).json({
+        success: false,
+        message: "Duplicate reference",
+      });
     }
 
-    console.error("Buy data error:", err);
+    if (err.message === "USER_NOT_FOUND") {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    if (err.message === "INSUFFICIENT_BALANCE") {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient balance",
+      });
+    }
+
+    if (err.message === "PLAN_NOT_AVAILABLE") {
+      return res.status(404).json({
+        success: false,
+        message: "Plan not available",
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Internal server error",
