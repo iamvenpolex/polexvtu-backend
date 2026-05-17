@@ -209,7 +209,7 @@ router.post("/plans/custom-price", async (req, res) => {
 router.post("/plans/custom-price/bulk", async (req, res) => {
   const { product_type, plans } = req.body;
 
-  if (!product_type || !Array.isArray(plans) || !plans.length) {
+  if (!product_type || !Array.isArray(plans)) {
     return res.status(400).json({
       success: false,
       message: "Provide product_type and plans array",
@@ -217,45 +217,67 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
   }
 
   try {
-    const apiPlans = await fetchEAPlans(product_type);
+    const apiPlansRaw = await fetchEAPlans(product_type);
 
-    const apiMap = {};
+    const apiPlans = Array.isArray(apiPlansRaw)
+      ? apiPlansRaw
+      : Object.values(apiPlansRaw).flat().filter(Boolean);
+
+    const apiMap = new Map();
     apiPlans.forEach((p) => {
-      apiMap[p.plan_id] = Number(p.price);
-    });
-
-    await db.begin(async (sql) => {
-      for (const plan of plans) {
-        const { plan_id, plan_name, markup, status } = plan;
-        if (!plan_id || markup == null) continue;
-
-        const markupVal = Number(markup);
-        const apiPrice = apiMap[plan_id] || 0;
-        const finalPrice = computeCustomPrice(apiPrice, markupVal);
-
-        await sql`
-          INSERT INTO custom_data_prices
-            (product_type, plan_id, plan_name, api_price, markup, custom_price, status)
-          VALUES
-            (${product_type}, ${plan_id}, ${plan_name || plan_id}, ${apiPrice}, ${markupVal}, ${finalPrice}, ${status || "active"})
-          ON CONFLICT (product_type, plan_id) DO UPDATE
-          SET markup = EXCLUDED.markup,
-              api_price = EXCLUDED.api_price,
-              custom_price = EXCLUDED.custom_price,
-              status = EXCLUDED.status,
-              updated_at = NOW()
-        `;
+      if (p?.plan_id != null) {
+        apiMap.set(String(p.plan_id), Number(p.price));
       }
     });
 
-    res.json({
+    // 🔥 STEP 1: DELETE OLD DATA (THIS FIXES YOUR ISSUE)
+    await db`
+      DELETE FROM custom_data_prices
+      WHERE product_type = ${product_type}
+    `;
+
+    let saved = 0;
+    const missing = [];
+
+    // 🔥 STEP 2: INSERT FRESH DATA ONLY
+    for (const plan of plans) {
+      const { plan_id, plan_name, markup, status } = plan;
+
+      if (!plan_id) continue;
+
+      const markupVal = Number(markup || 0);
+      const apiPrice = apiMap.get(String(plan_id));
+
+      if (apiPrice == null) {
+        missing.push(plan_id);
+        continue;
+      }
+
+      const finalPrice = computeCustomPrice(apiPrice, markupVal);
+
+      await db`
+        INSERT INTO custom_data_prices
+          (product_type, plan_id, plan_name, api_price, markup, custom_price, status)
+        VALUES
+          (${product_type}, ${String(plan_id)}, ${plan_name || plan_id}, ${apiPrice}, ${markupVal}, ${finalPrice}, ${status || "active"})
+      `;
+
+      saved++;
+    }
+
+    return res.json({
       success: true,
-      message: "All markups saved successfully",
+      message: "Bulk replace completed successfully",
+      saved,
+      missing_from_api: missing,
     });
+
   } catch (err) {
-    res.status(500).json({
+    console.error("Bulk replace error:", err);
+
+    return res.status(500).json({
       success: false,
-      message: "Failed to save markups",
+      message: "Bulk save failed",
       error: err.message,
     });
   }
