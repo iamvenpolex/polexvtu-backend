@@ -10,25 +10,28 @@ const walletRoutes = require("./routes/wallet");
 const adminRoutes = require("./routes/admin");
 const withdrawRoutes = require("./routes/withdraw");
 const transactionRoutes = require("./routes/transaction");
-const vtuRoutes = require("./routes/vtu"); // 👈 Add this line
-const buyDataRoutes = require("./routes/buydata"); 
+const vtuRoutes = require("./routes/vtu");
+const buyDataRoutes = require("./routes/buydata");
 const cableTvRoutes = require("./routes/cabletv");
 const buyCableTvRoutes = require("./routes/buycabletv");
 const electricityRoutes = require("./routes/electricity");
 const educationRoutes = require("./routes/education");
 const forgetpassRoutes = require("./routes/forgetpass");
 const pingRoutes = require("./routes/ping");
-const smsRoutes = require("./routes/sms"); 
+const smsRoutes = require("./routes/sms");
 const airtimeRoutes = require("./routes/airtime");
 const bettingRoutes = require("./routes/betting");
 const giftcardsRoutes = require("./routes/giftcards");
+
+// Jobs
+const { startCleanupJob } = require("./cleanup");
 
 const app = express();
 
 // ✅ Allowed origins
 const allowedOrigins = [
-  "http://localhost:3000",       // Local dev
-  "https://tapam.mipitech.com.ng", // Production frontend
+  "http://localhost:3000",
+  "https://tapam.mipitech.com.ng",
   "https://polexvtu-admin.vercel.app",
 ];
 
@@ -36,7 +39,6 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // allow requests with no origin (e.g., mobile apps, curl)
       if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
       callback(new Error("Not allowed by CORS"));
     },
@@ -49,9 +51,12 @@ app.use(
 // ✅ Parse JSON bodies
 app.use(express.json());
 
-// ✅ Confirm DB connection
+// ✅ Confirm DB connection + start cleanup job
 db`SELECT 1`
-  .then(() => console.log("✅ PostgreSQL Connected to Supabase"))
+  .then(() => {
+    console.log("✅ PostgreSQL Connected to Supabase");
+    startCleanupJob();
+  })
   .catch((err) => console.error("❌ Database Connection Failed:", err));
 
 // ✅ API routes
@@ -61,16 +66,16 @@ app.use("/api/wallet", walletRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/withdraw", withdrawRoutes);
 app.use("/api/transactions", transactionRoutes);
-app.use("/api/vtu", vtuRoutes); // 👈 Add this line
-app.use("/api/buydata", buyDataRoutes);            // 👈 mount route
-app.use("/api/cabletv", cableTvRoutes);      // fetch plans & admin prices
-app.use("/api/buycabletv", buyCableTvRoutes); // buy/verify IUC
-app.use("/api/electricity", electricityRoutes); // buy/verify IUC
+app.use("/api/vtu", vtuRoutes);
+app.use("/api/buydata", buyDataRoutes);
+app.use("/api/cabletv", cableTvRoutes);
+app.use("/api/buycabletv", buyCableTvRoutes);
+app.use("/api/electricity", electricityRoutes);
 app.use("/api/education", educationRoutes);
 app.use("/api/forgot-password", forgetpassRoutes);
 app.use("/api/ping", pingRoutes);
-app.use("/api/sms", smsRoutes); 
-app.use("/api/airtime", airtimeRoutes);  
+app.use("/api/sms", smsRoutes);
+app.use("/api/airtime", airtimeRoutes);
 app.use("/api/betting", bettingRoutes);
 app.use("/api/giftcards", giftcardsRoutes);
 
