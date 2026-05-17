@@ -3,18 +3,10 @@
 const express = require("express");
 const axios = require("axios");
 const router = express.Router();
-const db = require("../config/db");
+const db = require("../config/db"); // postgres.js instance
 
 const BASE_URL = "https://easyaccessapi.com.ng/api/live/v1/purchase-data";
 const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
-
-// FIXED NETWORK MAP
-const NETWORK_MAP = {
-  mtn: 1,
-  glo: 2,
-  airtel: 3,
-  "9mobile": 4,
-};
 
 router.post("/", async (req, res) => {
   const { user_id, network, mobile_no, dataplan, client_reference } = req.body;
@@ -27,18 +19,10 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ success: false, message: "Mobile number must be 11 digits" });
   }
 
-  // 🔥 FIX: convert network properly
-  const networkCode = NETWORK_MAP[String(network).toLowerCase()];
-
-  if (!networkCode) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid network selected",
-    });
-  }
-
   try {
+    // 🔒 TRANSACTION START
     const result = await db.begin(async (tx) => {
+
       const dup = await tx`
         SELECT id FROM transactions WHERE reference = ${client_reference}
       `;
@@ -65,7 +49,7 @@ router.post("/", async (req, res) => {
       const plan = plans[0];
       const price = Number(plan.custom_price);
 
-      if (user.balance < price) {
+      if (Number(user.balance) < price) {
         throw new Error("INSUFFICIENT_BALANCE");
       }
 
@@ -85,7 +69,7 @@ router.post("/", async (req, res) => {
           balance_before, balance_after
         ) VALUES (
           ${user.id}, ${client_reference}, 'data', ${price}, 0, 'pending',
-          ${networkCode}, ${plan.plan_name}, ${mobile_no}, 'wallet',
+          ${network}, ${plan.plan_name}, ${mobile_no}, 'wallet',
           ${"Data purchase of " + plan.plan_name},
           ${balance_before}, ${balance_after}
         )
@@ -94,14 +78,16 @@ router.post("/", async (req, res) => {
       return { user, plan, price, balance_before };
     });
 
-    // ================= API CALL =================
+    // =========================
+    // CALL EASYACCESS API
+    // =========================
     let response;
 
     try {
       response = await axios.post(
         BASE_URL,
         {
-          network: networkCode, // 🔥 FIXED HERE
+          network,
           dataplan,
           mobileno: mobile_no,
           client_reference,
@@ -116,21 +102,23 @@ router.post("/", async (req, res) => {
         }
       );
     } catch (apiErr) {
-      await db`
-        UPDATE users 
-        SET balance = ${result.balance_before}
-        WHERE id = ${result.user.id}
-      `;
+      await db.begin(async (tx) => {
+        await tx`
+          UPDATE users 
+          SET balance = ${result.balance_before}
+          WHERE id = ${result.user.id}
+        `;
 
-      await db`
-        UPDATE transactions 
-        SET status = 'failed',
-            api_response = ${JSON.stringify({
-              error: "API_REQUEST_FAILED",
-              message: apiErr.message,
-            })}
-        WHERE reference = ${client_reference}
-      `;
+        await tx`
+          UPDATE transactions 
+          SET status = 'failed',
+              api_response = ${JSON.stringify({
+                error: "API_REQUEST_FAILED",
+                message: apiErr.message,
+              })}
+          WHERE reference = ${client_reference}
+        `;
+      });
 
       return res.status(502).json({
         success: false,
@@ -140,14 +128,34 @@ router.post("/", async (req, res) => {
 
     const ea = response.data;
 
+    // =========================
+    // LOG API RESPONSE (IMPORTANT PART)
+    // =========================
+    const apiLog = {
+      code: ea?.code,
+      status: ea?.status,
+      message: ea?.message,
+      reference: ea?.reference,
+      amount: ea?.amount,
+      network: ea?.network,
+      mobileno: ea?.mobileno,
+      dataplan: ea?.dataplan,
+      true_response: ea?.true_response,
+      client_reference: ea?.client_reference,
+      transaction_date: ea?.transaction_date,
+    };
+
     const isSuccess = ea?.status === "success" || ea?.code === 200;
 
+    // =========================
+    // SUCCESS
+    // =========================
     if (isSuccess) {
       await db`
         UPDATE transactions
         SET status = 'success',
             api_amount = ${ea.amount || 0},
-            api_response = ${JSON.stringify(ea)}
+            api_response = ${JSON.stringify(apiLog)}
         WHERE reference = ${client_reference}
       `;
 
@@ -158,18 +166,24 @@ router.post("/", async (req, res) => {
       });
     }
 
-    await db`
-      UPDATE users 
-      SET balance = ${result.balance_before}
-      WHERE id = ${result.user.id}
-    `;
+    // =========================
+    // FAILED RESPONSE FROM API
+    // =========================
+    await db.begin(async (tx) => {
+      await tx`
+        UPDATE users 
+        SET balance = ${result.balance_before}
+        WHERE id = ${result.user.id}
+      `;
 
-    await db`
-      UPDATE transactions 
-      SET status = 'failed',
-          api_response = ${JSON.stringify(ea)}
-      WHERE reference = ${client_reference}
-    `;
+      await tx`
+        UPDATE transactions 
+        SET status = 'failed',
+            api_amount = ${ea.amount || 0},
+            api_response = ${JSON.stringify(apiLog)}
+        WHERE reference = ${client_reference}
+      `;
+    });
 
     return res.json({
       success: false,
@@ -187,7 +201,7 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    console.error(err);
+    console.error("Buy data error:", err);
     return res.status(500).json({
       success: false,
       message: "Internal server error",
