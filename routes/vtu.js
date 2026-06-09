@@ -10,6 +10,13 @@ const BASE_URL = "https://easyaccessapi.com.ng/api/live/v1";
 
 const MIN_MARGIN = 5;
 
+const ALL_PRODUCT_TYPES = [
+  "mtn_sme", "mtn_cg_lite", "mtn_cg", "mtn_awoof", "mtn_gifting",
+  "glo_cg", "glo_awoof", "glo_gifting",
+  "airtel_cg", "airtel_awoof", "airtel_gifting",
+  "9mobile_sme", "9mobile_gifting",
+];
+
 function computeCustomPrice(apiPrice, markup) {
   const base = Number(apiPrice);
   const m = Number(markup) || 0;
@@ -29,13 +36,19 @@ async function fetchEAPlans(product_type) {
     }
   );
 
-  return (
-    response.data?.MTN ||
-    response.data?.GLO ||
-    response.data?.AIRTEL ||
-    response.data?.["9MOBILE"] ||
-    []
-  );
+  // Provider returns data keyed by the product_type string directly
+  // e.g. response.data?.mtn_sme or response.data?.MTN etc.
+  // Try exact key first, then uppercase fallbacks
+  const data = response.data;
+  const plans =
+    data?.[product_type] ||
+    data?.MTN ||
+    data?.GLO ||
+    data?.AIRTEL ||
+    data?.["9MOBILE"] ||
+    [];
+
+  return Array.isArray(plans) ? plans : [];
 }
 
 // ─────────────────────────────────────────────
@@ -201,7 +214,7 @@ router.post("/plans/custom-price", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// BULK FIXED
+// BULK
 // ─────────────────────────────────────────────
 router.post("/plans/custom-price/bulk", async (req, res) => {
   const { product_type, plans } = req.body;
@@ -215,7 +228,6 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
 
   try {
     const apiPlansRaw = await fetchEAPlans(product_type);
-
     const apiPlans = Array.isArray(apiPlansRaw)
       ? apiPlansRaw
       : Object.values(apiPlansRaw).flat().filter(Boolean);
@@ -237,7 +249,6 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
 
     for (const plan of plans) {
       const { plan_id, plan_name, markup, status } = plan;
-
       if (!plan_id) continue;
 
       const markupVal = Number(markup || 0);
@@ -268,7 +279,6 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
     });
   } catch (err) {
     console.error("Bulk replace error:", err);
-
     return res.status(500).json({
       success: false,
       message: "Bulk save failed",
@@ -278,8 +288,7 @@ router.post("/plans/custom-price/bulk", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ADMIN: CHECK DB STATUS (for button toggle)
-// Returns whether the table has any plans at all
+// ADMIN: CHECK DB STATUS
 // ─────────────────────────────────────────────
 router.get("/admin/plans/status", async (req, res) => {
   try {
@@ -287,11 +296,7 @@ router.get("/admin/plans/status", async (req, res) => {
       SELECT COUNT(*) AS total FROM custom_data_prices
     `;
     const total = Number(rows[0]?.total || 0);
-    res.json({
-      success: true,
-      hasPlans: total > 0,
-      total,
-    });
+    res.json({ success: true, hasPlans: total > 0, total });
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -309,7 +314,6 @@ router.delete("/admin/plans/all", async (req, res) => {
     const result = await db`
       DELETE FROM custom_data_prices RETURNING id
     `;
-
     res.json({
       success: true,
       message: `Deleted all ${result.length} plans successfully`,
@@ -346,10 +350,7 @@ router.delete("/admin/plans/single/:id", async (req, res) => {
       return res.status(404).json({ success: false, message: "Plan not found" });
     }
 
-    res.json({
-      success: true,
-      message: `Plan "${result[0].plan_name}" deleted`,
-    });
+    res.json({ success: true, message: `Plan "${result[0].plan_name}" deleted` });
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -360,11 +361,10 @@ router.delete("/admin/plans/single/:id", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ADMIN: FULL SYNC — delete all + re-fetch all networks + re-insert
-// All plans come back as inactive — admin must activate after review
+// ADMIN: FULL SYNC
+// Wipes all plans, re-fetches all product types, inserts as inactive
 // ─────────────────────────────────────────────
 router.post("/admin/plans/sync", async (req, res) => {
-  const productTypes = ["MTN", "GLO", "AIRTEL", "9MOBILE"];
   let totalSynced = 0;
   const summary = {};
 
@@ -372,8 +372,8 @@ router.post("/admin/plans/sync", async (req, res) => {
     // Step 1: Wipe everything
     await db`DELETE FROM custom_data_prices`;
 
-    // Step 2: Fetch and re-insert for all networks
-    for (const product_type of productTypes) {
+    // Step 2: Fetch and re-insert for every product type
+    for (const product_type of ALL_PRODUCT_TYPES) {
       try {
         const apiPlans = await fetchEAPlans(product_type);
 
@@ -413,7 +413,7 @@ router.post("/admin/plans/sync", async (req, res) => {
 
     res.json({
       success: true,
-      message: `Sync complete. ${totalSynced} plans inserted — all inactive. Review and activate plans before users can see them.`,
+      message: `Sync complete. ${totalSynced} plans inserted — all inactive. Review and activate before users can buy.`,
       total: totalSynced,
       summary,
       synced_at: new Date(),
