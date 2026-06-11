@@ -244,41 +244,39 @@ router.post("/", async (req, res) => {
   }
 });
 
-module.exports = router;
-
-
-/**
- * GET BENEFICIARIES
- * Returns distinct phone numbers from past successful data transactions for this user
- * GET /api/transactions/beneficiaries?type=data
- */
+// =========================
+// GET BENEFICIARIES
+// GET /api/buydata/beneficiaries?user_id=123&type=data
+// =========================
 router.get("/beneficiaries", async (req, res) => {
-  const user_id = req.user?.id; // assumes auth middleware sets req.user
-  const { type } = req.query;
+  const { user_id, type } = req.query;
 
   if (!user_id) {
-    return res.status(401).json({ success: false, message: "Unauthorized" });
+    return res.status(400).json({ success: false, message: "user_id is required" });
   }
 
   try {
     const rows = await db`
-      SELECT phone, MAX(created_at) AS last_used
-      FROM transactions
-      WHERE user_id = ${user_id}
-        AND status = 'success'
-        AND type = ${type || "data"}
-        AND phone IS NOT NULL
-        AND phone != ''
-      GROUP BY phone
+      SELECT phone
+      FROM (
+        SELECT phone, MAX(created_at) AS last_used
+        FROM transactions
+        WHERE user_id = ${Number(user_id)}
+          AND status = 'success'
+          AND type = ${type || "data"}
+          AND phone IS NOT NULL
+          AND phone != ''
+        GROUP BY phone
+      ) sub
       ORDER BY last_used DESC
       LIMIT 6
     `;
 
-    const phones = rows.map((r) => r.phone);
-
-    res.json({ success: true, phones });
+    res.json({ success: true, phones: rows.map((r) => r.phone) });
   } catch (err) {
     console.error("Beneficiaries error:", err.message);
     res.status(500).json({ success: false, phones: [] });
   }
 });
+
+module.exports = router;
