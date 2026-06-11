@@ -4,37 +4,6 @@ const db = require("../config/db");
 const jwt = require("jsonwebtoken");
 
 // ------------------------
-// Network Mapping (ADDED ONLY)
-// ------------------------
-const AIRTIME_NETWORKS = {
-  "1": "MTN",
-  "2": "Airtel",
-  "3": "GLO",
-  "4": "9mobile",
-};
-
-const DATA_NETWORKS = {
-  "1": "MTN",
-  "2": "GLO",
-  "3": "Airtel",
-  "4": "9mobile",
-};
-
-const getNetworkName = (type, networkId) => {
-  if (!networkId) return null;
-
-  if (type === "airtime") {
-    return AIRTIME_NETWORKS[String(networkId)] || networkId;
-  }
-
-  if (type === "data") {
-    return DATA_NETWORKS[String(networkId)] || networkId;
-  }
-
-  return networkId;
-};
-
-// ------------------------
 // Middleware: Protect Routes
 // ------------------------
 const protect = (req, res, next) => {
@@ -61,7 +30,7 @@ router.get("/", protect, async (req, res) => {
     const userId = req.user.id;
 
     const walletRows = await db`
-      SELECT id, reference, type, amount, status, created_at
+      SELECT id, reference, type, amount, status, created_at, phone, network, description,
       FROM transactions
       WHERE user_id = ${userId} AND type NOT IN ('reward-to-wallet','tapam-transfer')
       ORDER BY created_at DESC
@@ -88,13 +57,7 @@ router.get("/", protect, async (req, res) => {
           description = tx.type;
       }
 
-      return {
-        ...tx,
-        network_name: getNetworkName(tx.type, tx.network), // ✅ ADDED
-        source: "wallet",
-        description,
-        isCredit,
-      };
+      return { ...tx, source: "wallet", description, isCredit };
     });
 
     res.json(walletTransactions);
@@ -125,6 +88,7 @@ router.get("/tapam", protect, async (req, res) => {
       let isCredit = false;
 
       if (tx.sender_id === userId && tx.receiver_id === userId) {
+        // Reward → Wallet
         description = "Reward moved to wallet";
         isCredit = true;
       } else if (tx.sender_id === userId) {
