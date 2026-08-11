@@ -1,9 +1,13 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
+
 const db = require("./config/db");
 
-// Routes
+// ─────────────────────────────────────────────
+// ROUTES
+// ─────────────────────────────────────────────
+
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/user");
 const walletRoutes = require("./routes/wallet");
@@ -22,47 +26,70 @@ const smsRoutes = require("./routes/sms");
 const airtimeRoutes = require("./routes/airtime");
 const bettingRoutes = require("./routes/betting");
 const giftcardsRoutes = require("./routes/giftcards");
-const webhookRoutes = require("./routes/webhook");       // ← NEW
+const webhookRoutes = require("./routes/webhook");
 
-// Jobs
+// ─────────────────────────────────────────────
+// JOBS
+// ─────────────────────────────────────────────
+
 const { startCleanupJob } = require("./cleanup");
-const startVerifyJob = require("./jobs/verify-pending"); // ← NEW
+const startVerifyJob = require("./jobs/verify-pending");
 
 const app = express();
 
-// ✅ Allowed origins
+// ─────────────────────────────────────────────
+// CORS
+// ─────────────────────────────────────────────
+
 const allowedOrigins = [
   "http://localhost:3000",
   "https://tapam.mipitech.com.ng",
   "https://polexvtu-admin.vercel.app",
 ];
 
-// ✅ CORS
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-      callback(new Error("Not allowed by CORS"));
+    origin(origin, callback) {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin)
+      ) {
+        return callback(null, true);
+      }
+
+      return callback(
+        new Error("Not allowed by CORS")
+      );
     },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+    ],
+
     credentials: true,
   })
 );
 
-// ✅ Parse JSON bodies
+// ─────────────────────────────────────────────
+// JSON
+// ─────────────────────────────────────────────
+
 app.use(express.json());
 
-// ✅ Confirm DB connection + start jobs
-db`SELECT 1`
-  .then(() => {
-    console.log("✅ PostgreSQL Connected to Supabase");
-    startCleanupJob();
-    startVerifyJob(db); // ← NEW: start pending transaction verifier
-  })
-  .catch((err) => console.error("❌ Database Connection Failed:", err));
+// ─────────────────────────────────────────────
+// ROUTES
+// ─────────────────────────────────────────────
 
-// ✅ API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/wallet", walletRoutes);
@@ -81,12 +108,55 @@ app.use("/api/sms", smsRoutes);
 app.use("/api/airtime", airtimeRoutes);
 app.use("/api/betting", bettingRoutes);
 app.use("/api/giftcards", giftcardsRoutes);
-app.use("/api/webhook", webhookRoutes); // ← NEW
 
-// ✅ Root + Health check
-app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
+// EasyAccess webhook
+app.use("/api/webhook", webhookRoutes);
 
-// ✅ Start server
+// ─────────────────────────────────────────────
+// HEALTH
+// ─────────────────────────────────────────────
+
+app.get("/", (req, res) => {
+  res.send(
+    "🚀 Polex VTU API is running successfully!"
+  );
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+  });
+});
+
+// ─────────────────────────────────────────────
+// DATABASE + JOBS
+// ─────────────────────────────────────────────
+
+db`SELECT 1`
+  .then(() => {
+    console.log(
+      "✅ PostgreSQL Connected to Supabase"
+    );
+
+    startCleanupJob();
+
+    startVerifyJob(db);
+  })
+  .catch((err) => {
+    console.error(
+      "❌ Database Connection Failed:",
+      err
+    );
+  });
+
+// ─────────────────────────────────────────────
+// SERVER
+// ─────────────────────────────────────────────
+
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`⚡ Server running on port ${PORT}`));
+
+app.listen(PORT, () => {
+  console.log(
+    `⚡ Server running on port ${PORT}`
+  );
+});

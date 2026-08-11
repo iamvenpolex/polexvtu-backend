@@ -4,14 +4,18 @@ const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
 
+function normalizeStatus(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
 function isSuccess(status) {
   return ["success", "successful"].includes(
-    String(status || "").toLowerCase()
+    normalizeStatus(status)
   );
 }
 
 function isFailed(status) {
-  return String(status || "").toLowerCase() === "failed";
+  return normalizeStatus(status) === "failed";
 }
 
 // ─────────────────────────────────────────────
@@ -23,11 +27,8 @@ router.post(
   "/easyaccess",
   express.json(),
   async (req, res) => {
-    // Respond immediately.
-    // EasyAccess expects a response within 5 seconds.
-    res.status(200).json({
-      received: true,
-    });
+    // Respond immediately so EasyAccess does not retry unnecessarily.
+    res.status(200).json({ received: true });
 
     const {
       status,
@@ -35,173 +36,205 @@ router.post(
       client_reference,
       reference,
       transaction_date,
+      amount,
     } = req.body;
 
-    console.log(
-      "📬 EasyAccess Webhook:",
-      req.body
-    );
+    console.log("📬 EasyAccess Webhook:", req.body);
 
-    if (!client_reference) {
+    if (!client_reference && !reference) {
       console.warn(
-        "⚠️ Webhook missing client_reference"
+        "⚠️ Webhook missing client_reference/reference"
       );
       return;
     }
 
     try {
-      // ─────────────────────────────────────────
+      let txRows;
+
+      if (client_reference) {
+        txRows = await db`
+          SELECT
+            t.id,
+            t.user_id,
+            t.reference,
+            t.provider_reference,
+            t.type,
+            t.status,
+            t.amount,
+            t.refunded,
+            t.balance_before
+          FROM transactions t
+          WHERE t.reference = ${client_reference}
+          LIMIT 1
+        `;
+      } else {
+        txRows = await db`
+          SELECT
+            t.id,
+            t.user_id,
+            t.reference,
+            t.provider_reference,
+            t.type,
+            t.status,
+            t.amount,
+            t.refunded,
+            t.balance_before
+          FROM transactions t
+          WHERE t.provider_reference = ${reference}
+          LIMIT 1
+        `;
+      }
+
+      if (!txRows.length) {
+        console.warn(
+          `⚠️ Webhook transaction not found: ${
+            client_reference || reference
+          }`
+        );
+        return;
+      }
+
+      const transaction = txRows[0];
+
+      // Always save provider reference.
+      if (reference) {
+        await db`
+          UPDATE transactions
+          SET
+            provider_reference = ${reference},
+            api_amount = ${Number(amount || 0)},
+            updated_at = NOW()
+          WHERE id = ${transaction.id}
+        `;
+      }
+
+      // Already resolved.
+      if (
+        transaction.status === "success" ||
+        transaction.status === "failed" ||
+        transaction.refunded === true
+      ) {
+        console.log(
+          `ℹ️ Webhook ${transaction.reference} already resolved`
+        );
+        return;
+      }
+
+      const webhookLog = {
+        source: "webhook",
+        status,
+        message,
+        reference,
+        client_reference,
+        amount,
+        transaction_date,
+      };
+
+      // ─────────────────────────────────────────────
       // SUCCESS
-      // ─────────────────────────────────────────
+      // ─────────────────────────────────────────────
 
       if (isSuccess(status)) {
-        await db.begin(async (tx) => {
-          const rows = await tx`
-            SELECT id, status
-            FROM transactions
-            WHERE reference = ${client_reference}
-            FOR UPDATE
-          `;
+        await db`
+          UPDATE transactions
+          SET
+            status = 'success',
+            refunded = false,
+            api_amount = ${Number(amount || 0)},
+            api_response = ${JSON.stringify(webhookLog)},
+            updated_at = NOW()
+          WHERE id = ${transaction.id}
+            AND status = 'pending'
+            AND refunded = false
+        `;
 
-          if (!rows.length) {
-            console.warn(
-              "⚠️ Webhook transaction not found:",
-              client_reference
-            );
-            return;
-          }
-
-          const transaction = rows[0];
-
-          // Already resolved
-          if (
-            transaction.status === "success" ||
-            transaction.status === "failed"
-          ) {
-            console.log(
-              `ℹ️ ${client_reference} already resolved as ${transaction.status}`
-            );
-            return;
-          }
-
-          await tx`
-            UPDATE transactions
-            SET
-              status = 'success',
-              api_response = ${JSON.stringify({
-                source: "webhook",
-                status,
-                message,
-                reference,
-                client_reference,
-                transaction_date,
-              })},
-              updated_at = NOW()
-            WHERE id = ${transaction.id}
-          `;
-
-          console.log(
-            `✅ Webhook: ${client_reference} → SUCCESS`
-          );
-        });
+        console.log(
+          `✅ Webhook: ${transaction.reference} → SUCCESS`
+        );
 
         return;
       }
 
-      // ─────────────────────────────────────────
+      // ─────────────────────────────────────────────
       // FAILED
-      // ─────────────────────────────────────────
+      // ─────────────────────────────────────────────
 
       if (isFailed(status)) {
         await db.begin(async (tx) => {
-          const rows = await tx`
+          const lockedRows = await tx`
             SELECT
               t.id,
               t.user_id,
               t.amount,
               t.status,
-              u.balance AS current_balance
+              t.refunded,
+              u.balance
             FROM transactions t
             JOIN users u ON u.id = t.user_id
-            WHERE t.reference = ${client_reference}
-            FOR UPDATE
+            WHERE t.id = ${transaction.id}
+            FOR UPDATE OF t, u
           `;
 
-          if (!rows.length) {
-            console.warn(
-              "⚠️ Webhook transaction not found:",
-              client_reference
-            );
+          if (!lockedRows.length) {
             return;
           }
 
-          const transaction = rows[0];
+          const locked = lockedRows[0];
 
-          // Already resolved.
-          // This is what prevents double refund.
-          if (transaction.status === "success") {
-            console.log(
-              `⚠️ ${client_reference} is already SUCCESS. No refund.`
-            );
+          // Another process already refunded it.
+          if (
+            locked.status !== "pending" ||
+            locked.refunded === true
+          ) {
             return;
           }
 
-          if (transaction.status === "failed") {
-            console.log(
-              `ℹ️ ${client_reference} already refunded.`
-            );
-            return;
-          }
+          const refundAmount = Number(locked.amount);
+          const newBalance =
+            Number(locked.balance) + refundAmount;
 
-          const refundAmount =
-            Number(transaction.amount);
-
-          const currentBalance =
-            Number(transaction.current_balance);
-
-          const balanceAfterRefund =
-            currentBalance + refundAmount;
-
-          // Refund current wallet balance
           await tx`
             UPDATE users
             SET balance = balance + ${refundAmount}
-            WHERE id = ${transaction.user_id}
+            WHERE id = ${locked.user_id}
           `;
 
-          // Mark transaction failed
           await tx`
             UPDATE transactions
             SET
               status = 'failed',
-              balance_after = ${balanceAfterRefund},
+              refunded = true,
+              balance_after = ${newBalance},
+              api_amount = ${Number(amount || 0)},
               api_response = ${JSON.stringify({
-                source: "webhook",
-                status,
-                message,
-                reference,
-                client_reference,
-                transaction_date,
+                ...webhookLog,
+                refund: {
+                  refunded: true,
+                  amount: refundAmount,
+                  source: "webhook",
+                },
               })},
               updated_at = NOW()
-            WHERE id = ${transaction.id}
+            WHERE id = ${locked.id}
+              AND status = 'pending'
+              AND refunded = false
           `;
-
-          console.log(
-            `💰 REFUNDED ₦${refundAmount} → user ${transaction.user_id}`
-          );
         });
+
+        console.log(
+          `❌ Webhook: ${transaction.reference} → FAILED/REFUNDED`
+        );
 
         return;
       }
 
       console.warn(
-        `⚠️ Unrecognised webhook status "${status}" for ${client_reference}`
+        `⚠️ Webhook unknown status "${status}" for ${transaction.reference}`
       );
     } catch (err) {
       console.error(
-        "❌ Webhook processing error:",
-        err.message
+        "❌ EasyAccess webhook processing error:",
+        err
       );
     }
   }
