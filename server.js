@@ -22,9 +22,11 @@ const smsRoutes = require("./routes/sms");
 const airtimeRoutes = require("./routes/airtime");
 const bettingRoutes = require("./routes/betting");
 const giftcardsRoutes = require("./routes/giftcards");
+const webhookRoutes = require("./routes/webhook");       // ← NEW
 
 // Jobs
 const { startCleanupJob } = require("./cleanup");
+const startVerifyJob = require("./jobs/verify-pending"); // ← NEW
 
 const app = express();
 
@@ -35,7 +37,7 @@ const allowedOrigins = [
   "https://polexvtu-admin.vercel.app",
 ];
 
-// ✅ CORS setup (handles preflight automatically)
+// ✅ CORS
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -51,11 +53,12 @@ app.use(
 // ✅ Parse JSON bodies
 app.use(express.json());
 
-// ✅ Confirm DB connection + start cleanup job
+// ✅ Confirm DB connection + start jobs
 db`SELECT 1`
   .then(() => {
     console.log("✅ PostgreSQL Connected to Supabase");
     startCleanupJob();
+    startVerifyJob(db); // ← NEW: start pending transaction verifier
   })
   .catch((err) => console.error("❌ Database Connection Failed:", err));
 
@@ -78,6 +81,7 @@ app.use("/api/sms", smsRoutes);
 app.use("/api/airtime", airtimeRoutes);
 app.use("/api/betting", bettingRoutes);
 app.use("/api/giftcards", giftcardsRoutes);
+app.use("/api/webhook", webhookRoutes); // ← NEW
 
 // ✅ Root + Health check
 app.get("/", (req, res) => res.send("🚀 Polex VTU API is running successfully!"));

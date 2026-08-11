@@ -2,19 +2,12 @@
 const postgres = require("postgres");
 require("dotenv").config();
 
-// ✅ Create PostgreSQL client using Supabase connection string
 const db = postgres(process.env.DATABASE_URL, {
-  ssl: "require", // ✅ Supabase requires SSL
+  ssl: "require",
+  prepare: false,      // ← fixes "prepared statement does not exist" on Supabase/Render
+  max: 10,             // max connections in pool
+  idle_timeout: 30,    // close idle connections after 30s
+  connect_timeout: 10, // fail fast if can't connect
 });
-
-// ✅ Test database connection
-(async () => {
-  try {
-    await db`SELECT 1`;
-    console.log("✅ PostgreSQL Connected to Supabase");
-  } catch (err) {
-    console.error("❌ PostgreSQL Connection Failed:", err.message);
-  }
-})();
 
 module.exports = db;

@@ -5,86 +5,282 @@ const axios = require("axios");
 const router = express.Router();
 const db = require("../config/db");
 
-const BASE_URL = "https://easyaccessapi.com.ng/api/live/v1/purchase-data";
+const BASE_URL =
+  "https://easyaccessapi.com.ng/api/live/v1/purchase-data";
+
 const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
 
-// Pick the most human-readable message from EA response
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+
 function getBestMessage(ea, fallback) {
   return ea?.true_response || ea?.message || fallback;
 }
 
-/**
- * BUY DATA ROUTE
- */
-router.post("/", async (req, res) => {
-  const { user_id, network, mobile_no, dataplan, client_reference } = req.body;
+function isSuccessStatus(status) {
+  return ["success", "successful"].includes(
+    String(status || "").toLowerCase()
+  );
+}
 
-  // =========================
+function isFailedStatus(status) {
+  return String(status || "").toLowerCase() === "failed";
+}
+
+function isSuccessCode(code) {
+  return [200, 201].includes(Number(code));
+}
+
+function isFailedCode(code) {
+  return [400, 401].includes(Number(code));
+}
+
+// ─────────────────────────────────────────────
+// REFUND TRANSACTION SAFELY
+// ─────────────────────────────────────────────
+//
+// IMPORTANT:
+// This function locks the transaction and user.
+// Therefore webhook + verifier cannot refund twice.
+//
+// It adds the refund to the CURRENT wallet balance.
+// It does NOT restore balance_before.
+// ─────────────────────────────────────────────
+
+async function refundTransaction(clientReference, apiResponse) {
+  return db.begin(async (tx) => {
+    const rows = await tx`
+      SELECT
+        t.id,
+        t.user_id,
+        t.amount,
+        t.status,
+        u.balance AS current_balance
+      FROM transactions t
+      JOIN users u ON u.id = t.user_id
+      WHERE t.reference = ${clientReference}
+      FOR UPDATE
+    `;
+
+    if (!rows.length) {
+      throw new Error("TRANSACTION_NOT_FOUND");
+    }
+
+    const transaction = rows[0];
+
+    // Already successful — NEVER refund
+    if (transaction.status === "success") {
+      return {
+        refunded: false,
+        alreadyResolved: true,
+        status: "success",
+      };
+    }
+
+    // Already failed — refund already processed
+    if (transaction.status === "failed") {
+      return {
+        refunded: false,
+        alreadyResolved: true,
+        status: "failed",
+      };
+    }
+
+    const refundAmount = Number(transaction.amount);
+    const currentBalance = Number(transaction.current_balance);
+
+    const balanceAfterRefund =
+      currentBalance + refundAmount;
+
+    // Add refund to CURRENT balance
+    await tx`
+      UPDATE users
+      SET balance = balance + ${refundAmount}
+      WHERE id = ${transaction.user_id}
+    `;
+
+    // Mark transaction failed
+    await tx`
+      UPDATE transactions
+      SET
+        status = 'failed',
+        balance_after = ${balanceAfterRefund},
+        api_response = ${JSON.stringify(apiResponse)},
+        updated_at = NOW()
+      WHERE id = ${transaction.id}
+    `;
+
+    return {
+      refunded: true,
+      alreadyResolved: false,
+      status: "failed",
+      amount: refundAmount,
+      balanceAfterRefund,
+    };
+  });
+}
+
+// ─────────────────────────────────────────────
+// BUY DATA
+// POST /api/buydata
+// ─────────────────────────────────────────────
+
+router.post("/", async (req, res) => {
+  const {
+    user_id,
+    network,
+    mobile_no,
+    dataplan,
+    client_reference,
+  } = req.body;
+
+  // ─────────────────────────────────────────────
   // VALIDATION
-  // =========================
-  if (!user_id || !network || !mobile_no || !dataplan || !client_reference) {
-    return res.status(400).json({ success: false, status: "failed", message: "Missing required fields" });
+  // ─────────────────────────────────────────────
+
+  if (
+    !user_id ||
+    !network ||
+    !mobile_no ||
+    !dataplan ||
+    !client_reference
+  ) {
+    return res.status(400).json({
+      success: false,
+      status: "failed",
+      message: "Missing required fields",
+    });
   }
 
   if (!/^\d{11}$/.test(mobile_no)) {
-    return res.status(400).json({ success: false, status: "failed", message: "Mobile number must be 11 digits" });
+    return res.status(400).json({
+      success: false,
+      status: "failed",
+      message: "Mobile number must be 11 digits",
+    });
   }
 
   try {
-    // =========================
-    // DB TRANSACTION (LOCK USER)
-    // =========================
+    // ─────────────────────────────────────────────
+    // LOCK USER → CHECK BALANCE → DEDUCT → PENDING
+    // ─────────────────────────────────────────────
+
     const result = await db.begin(async (tx) => {
-      const dup = await tx`
-        SELECT id FROM transactions WHERE reference = ${client_reference}
+      const duplicate = await tx`
+        SELECT id, status
+        FROM transactions
+        WHERE reference = ${client_reference}
+        LIMIT 1
       `;
-      if (dup.length) throw new Error("DUPLICATE_REFERENCE");
+
+      if (duplicate.length) {
+        throw new Error("DUPLICATE_REFERENCE");
+      }
 
       const users = await tx`
-        SELECT id, balance FROM users WHERE id = ${user_id} FOR UPDATE
+        SELECT id, balance
+        FROM users
+        WHERE id = ${Number(user_id)}
+        FOR UPDATE
       `;
-      if (!users.length) throw new Error("USER_NOT_FOUND");
+
+      if (!users.length) {
+        throw new Error("USER_NOT_FOUND");
+      }
 
       const user = users[0];
 
       const plans = await tx`
         SELECT plan_name, custom_price
         FROM custom_data_prices
-        WHERE plan_id = ${dataplan}
-        AND status = 'active'
+        WHERE plan_id = ${Number(dataplan)}
+          AND status = 'active'
+        LIMIT 1
       `;
-      if (!plans.length) throw new Error("PLAN_NOT_AVAILABLE");
+
+      if (!plans.length) {
+        throw new Error("PLAN_NOT_AVAILABLE");
+      }
 
       const plan = plans[0];
+
       const price = Number(plan.custom_price);
 
-      if (Number(user.balance) < price) throw new Error("INSUFFICIENT_BALANCE");
+      if (!Number.isFinite(price) || price <= 0) {
+        throw new Error("INVALID_PLAN_PRICE");
+      }
 
-      const balance_before = Number(user.balance);
-      const balance_after = balance_before - price;
+      const balanceBefore = Number(user.balance);
 
+      if (balanceBefore < price) {
+        throw new Error("INSUFFICIENT_BALANCE");
+      }
+
+      const balanceAfter = balanceBefore - price;
+
+      // Deduct wallet
       await tx`
-        UPDATE users SET balance = ${balance_after} WHERE id = ${user.id}
+        UPDATE users
+        SET balance = ${balanceAfter}
+        WHERE id = ${user.id}
       `;
 
+      // Create pending transaction
       await tx`
         INSERT INTO transactions (
-          user_id, reference, type, amount, api_amount, status,
-          network, plan, phone, via, description, balance_before, balance_after
-        ) VALUES (
-          ${user.id}, ${client_reference}, 'data', ${price}, 0, 'pending',
-          ${network}, ${plan.plan_name}, ${mobile_no}, 'wallet',
-          ${"Data purchase " + plan.plan_name}, ${balance_before}, ${balance_after}
+          user_id,
+          reference,
+          type,
+          amount,
+          api_amount,
+          status,
+          network,
+          plan,
+          phone,
+          via,
+          description,
+          balance_before,
+          balance_after
+        )
+        VALUES (
+          ${user.id},
+          ${client_reference},
+          'data',
+          ${price},
+          0,
+          'pending',
+          ${Number(network)},
+          ${plan.plan_name},
+          ${mobile_no},
+          'wallet',
+          ${"Data purchase " + plan.plan_name},
+          ${balanceBefore},
+          ${balanceAfter}
         )
       `;
 
-      return { user, plan, price, balance_before };
+      return {
+        userId: user.id,
+        price,
+        balanceBefore,
+        balanceAfter,
+        plan,
+      };
     });
 
-    // =========================
-    // CALL EASYACCESS API
-    // Per docs: network & dataplan must be integers
-    // =========================
+    console.log("💰 Wallet deducted:", {
+      reference: client_reference,
+      user_id: result.userId,
+      amount: result.price,
+      balance_before: result.balanceBefore,
+      balance_after: result.balanceAfter,
+    });
+
+    // ─────────────────────────────────────────────
+    // CALL EASYACCESS
+    // ─────────────────────────────────────────────
+
     let response;
 
     try {
@@ -115,151 +311,259 @@ router.post("/", async (req, res) => {
         }
       );
 
-      console.log("📡 EasyAccess Response:", response.data);
+      console.log(
+        "📡 EasyAccess Response:",
+        response.data
+      );
     } catch (apiErr) {
-      console.error("❌ EA API ERROR:", apiErr.response?.data || apiErr.message);
+      console.error(
+        "❌ EA API ERROR:",
+        apiErr.response?.data || apiErr.message
+      );
 
-      // Refund user immediately on network/API error
-      await db.begin(async (tx) => {
-        await tx`
-          UPDATE users SET balance = ${result.balance_before} WHERE id = ${result.user.id}
-        `;
-        await tx`
-          UPDATE transactions
-          SET status = 'failed',
-              api_response = ${JSON.stringify({ error: "API_REQUEST_FAILED", message: apiErr.message })}
-          WHERE reference = ${client_reference}
-        `;
-      });
+      // ─────────────────────────────────────────────
+      // IMPORTANT:
+      // DO NOT REFUND NETWORK/TIMEOUT ERRORS.
+      //
+      // EasyAccess could have received the request
+      // and delivered the data even though our server
+      // did not receive the response.
+      // ─────────────────────────────────────────────
 
-      return res.status(502).json({
-        success: false,
-        status: "failed",
-        message: "Could not reach provider. Your wallet has been refunded.",
+      await db`
+        UPDATE transactions
+        SET
+          status = 'pending',
+          api_response = ${JSON.stringify({
+            source: "purchase_api",
+            error:
+              apiErr.code === "ECONNABORTED"
+                ? "TIMEOUT"
+                : "NETWORK_ERROR",
+            message: apiErr.message,
+            verification_required: true,
+          })},
+          updated_at = NOW()
+        WHERE reference = ${client_reference}
+      `;
+
+      return res.status(202).json({
+        success: true,
+        status: "pending",
+        message:
+          "Your transaction is being processed. We will confirm the result shortly.",
+        reference: client_reference,
       });
     }
 
     const ea = response.data;
 
-    // =========================
-    // STATUS HANDLING
-    // Per docs: code 200 + status "success" = success
-    //           status "pending" = pending
-    //           anything else = failed (provider refunds on their end)
-    // =========================
     const code = Number(ea?.code);
-    const eaStatus = ea?.status?.toLowerCase();
+
+    const eaStatus = String(
+      ea?.status || ""
+    ).toLowerCase();
 
     const apiLog = {
+      source: "purchase_api",
       code,
       status: eaStatus,
-      message: ea?.message,
-      true_response: ea?.true_response,
-      reference: ea?.reference,
-      amount: ea?.amount,
-      network: ea?.network,
-      mobileno: ea?.mobileno,
-      dataplan: ea?.dataplan,
-      client_reference: ea?.client_reference,
-      transaction_date: ea?.transaction_date,
+      message: ea?.message || null,
+      true_response: ea?.true_response || null,
+      reference: ea?.reference || null,
+      amount: ea?.amount || null,
+      network: ea?.network || null,
+      mobileno: ea?.mobileno || null,
+      dataplan: ea?.dataplan || null,
+      client_reference:
+        ea?.client_reference || client_reference,
+      transaction_date:
+        ea?.transaction_date || null,
     };
 
-    // =========================
+    // ─────────────────────────────────────────────
     // SUCCESS
-    // =========================
-    if (code === 200 && eaStatus === "success") {
+    // ─────────────────────────────────────────────
+
+    if (
+      isSuccessCode(code) ||
+      isSuccessStatus(eaStatus)
+    ) {
       await db`
         UPDATE transactions
-        SET status = 'success',
-            api_amount = ${ea.amount || 0},
-            api_response = ${JSON.stringify(apiLog)}
+        SET
+          status = 'success',
+          api_amount = ${Number(ea?.amount || 0)},
+          api_response = ${JSON.stringify(apiLog)},
+          updated_at = NOW()
         WHERE reference = ${client_reference}
       `;
+
+      console.log(
+        "✅ DATA PURCHASE SUCCESS:",
+        client_reference
+      );
 
       return res.json({
         success: true,
         status: "success",
-        message: getBestMessage(ea, "Data purchase successful"),
+        message: getBestMessage(
+          ea,
+          "Data purchase successful"
+        ),
         reference: client_reference,
       });
     }
 
-    // =========================
+    // ─────────────────────────────────────────────
     // PENDING
-    // =========================
+    // ─────────────────────────────────────────────
+
     if (eaStatus === "pending") {
       await db`
         UPDATE transactions
-        SET status = 'pending',
-            api_response = ${JSON.stringify(apiLog)}
+        SET
+          status = 'pending',
+          api_response = ${JSON.stringify(apiLog)},
+          updated_at = NOW()
         WHERE reference = ${client_reference}
       `;
 
-      return res.json({
+      return res.status(202).json({
         success: true,
         status: "pending",
-        message: getBestMessage(ea, "Your transaction is being processed. We'll update you shortly."),
+        message:
+          "Your transaction is being processed. We will confirm the result shortly.",
         reference: client_reference,
       });
     }
 
-    // =========================
-    // FAILED — refund user
-    // =========================
-    await db.begin(async (tx) => {
-      await tx`
-        UPDATE users SET balance = ${result.balance_before} WHERE id = ${result.user.id}
-      `;
-      await tx`
-        UPDATE transactions
-        SET status = 'failed',
-            api_amount = ${ea.amount || 0},
-            api_response = ${JSON.stringify(apiLog)}
-        WHERE reference = ${client_reference}
-      `;
-    });
+    // ─────────────────────────────────────────────
+    // FAILED
+    // ─────────────────────────────────────────────
 
-    return res.status(400).json({
-      success: false,
-      status: "failed",
-      message: getBestMessage(ea, "Purchase failed. Your wallet has been refunded."),
-    });
+    if (
+      isFailedCode(code) ||
+      isFailedStatus(eaStatus)
+    ) {
+      const refund = await refundTransaction(
+        client_reference,
+        apiLog
+      );
 
+      console.log("💰 Refund result:", refund);
+
+      return res.status(400).json({
+        success: false,
+        status: "failed",
+        refunded: true,
+        message:
+          "Your data purchase failed. Your wallet has been refunded.",
+        reference: client_reference,
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // UNKNOWN RESPONSE
+    // ─────────────────────────────────────────────
+
+    await db`
+      UPDATE transactions
+      SET
+        status = 'pending',
+        api_response = ${JSON.stringify({
+          ...apiLog,
+          verification_required: true,
+          reason: "UNKNOWN_PROVIDER_RESPONSE",
+        })},
+        updated_at = NOW()
+      WHERE reference = ${client_reference}
+    `;
+
+    return res.status(202).json({
+      success: true,
+      status: "pending",
+      message:
+        "Your transaction is being verified. We will confirm the result shortly.",
+      reference: client_reference,
+    });
   } catch (err) {
-    console.error("DATA PURCHASE ERROR:", err.message);
+    console.error(
+      "DATA PURCHASE ERROR:",
+      err.message
+    );
 
     const errorMap = {
-      DUPLICATE_REFERENCE: { code: 409, message: "Duplicate reference" },
-      USER_NOT_FOUND: { code: 404, message: "User not found" },
-      INSUFFICIENT_BALANCE: { code: 400, message: "Insufficient balance" },
-      PLAN_NOT_AVAILABLE: { code: 404, message: "Plan not available" },
+      DUPLICATE_REFERENCE: {
+        code: 409,
+        message: "Duplicate reference",
+      },
+
+      USER_NOT_FOUND: {
+        code: 404,
+        message: "User not found",
+      },
+
+      INSUFFICIENT_BALANCE: {
+        code: 400,
+        message: "Insufficient balance",
+      },
+
+      PLAN_NOT_AVAILABLE: {
+        code: 404,
+        message: "Plan not available",
+      },
+
+      INVALID_PLAN_PRICE: {
+        code: 400,
+        message: "Invalid plan price",
+      },
+
+      TRANSACTION_NOT_FOUND: {
+        code: 404,
+        message: "Transaction not found",
+      },
     };
 
     const known = errorMap[err.message];
+
     if (known) {
-      return res.status(known.code).json({ success: false, status: "failed", message: known.message });
+      return res.status(known.code).json({
+        success: false,
+        status: "failed",
+        message: known.message,
+      });
     }
 
-    return res.status(500).json({ success: false, status: "failed", message: "Internal server error" });
+    return res.status(500).json({
+      success: false,
+      status: "failed",
+      message: "Internal server error",
+    });
   }
 });
 
-// =========================
+// ─────────────────────────────────────────────
 // GET BENEFICIARIES
-// GET /api/buydata/beneficiaries?user_id=123&type=data
-// =========================
+// ─────────────────────────────────────────────
+
 router.get("/beneficiaries", async (req, res) => {
   const { user_id, type } = req.query;
 
   if (!user_id) {
-    return res.status(400).json({ success: false, message: "user_id is required" });
+    return res.status(400).json({
+      success: false,
+      message: "user_id is required",
+    });
   }
 
   try {
     const rows = await db`
       SELECT phone
       FROM (
-        SELECT phone, MAX(created_at) AS last_used
+        SELECT
+          phone,
+          MAX(created_at) AS last_used
         FROM transactions
         WHERE user_id = ${Number(user_id)}
           AND status = 'success'
@@ -272,10 +576,20 @@ router.get("/beneficiaries", async (req, res) => {
       LIMIT 6
     `;
 
-    res.json({ success: true, phones: rows.map((r) => r.phone) });
+    return res.json({
+      success: true,
+      phones: rows.map((r) => r.phone),
+    });
   } catch (err) {
-    console.error("Beneficiaries error:", err.message);
-    res.status(500).json({ success: false, phones: [] });
+    console.error(
+      "Beneficiaries error:",
+      err.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      phones: [],
+    });
   }
 });
 
