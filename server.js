@@ -27,6 +27,7 @@ const airtimeRoutes = require("./routes/airtime");
 const bettingRoutes = require("./routes/betting");
 const giftcardsRoutes = require("./routes/giftcards");
 const webhookRoutes = require("./routes/webhook");
+const virtualAccountRoutes = require("./routes/virtualAccount");
 
 // ─────────────────────────────────────────────
 // JOBS
@@ -108,6 +109,7 @@ app.use("/api/sms", smsRoutes);
 app.use("/api/airtime", airtimeRoutes);
 app.use("/api/betting", bettingRoutes);
 app.use("/api/giftcards", giftcardsRoutes);
+app.use("/api/virtual-account", virtualAccountRoutes);
 
 // EasyAccess webhook
 app.use("/api/webhook", webhookRoutes);
