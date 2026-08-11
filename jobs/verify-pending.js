@@ -1,19 +1,5 @@
 "use strict";
 
-/**
- * PENDING TRANSACTION VERIFIER
- *
- * Purpose:
- * - Backup for missed EasyAccess webhooks.
- * - Queries EasyAccess for pending data transactions.
- * - Uses the EasyAccess provider reference, NOT the client reference.
- * - Prevents double refunds.
- *
- * Start from server.js:
- * const startVerifyJob = require("./jobs/verify-pending");
- * startVerifyJob(db);
- */
-
 const axios = require("axios");
 
 const QUERY_URL =
@@ -26,7 +12,7 @@ const PENDING_AGE_MINUTES = 3;
 const BATCH_SIZE = 20;
 
 // ─────────────────────────────────────────────
-// HELPERS
+// STATUS HELPERS
 // ─────────────────────────────────────────────
 
 function normalizeStatus(status) {
@@ -41,8 +27,111 @@ function isFailed(status) {
   return normalizeStatus(status) === "failed";
 }
 
-function isPending(status) {
-  return normalizeStatus(status) === "pending";
+// ─────────────────────────────────────────────
+// GET EASYACCESS PROVIDER REFERENCE
+// ─────────────────────────────────────────────
+//
+// Your transaction.reference:
+//   ref_1786483958842
+//
+// EasyAccess reference:
+//   DATA57646119bea4b4
+//
+// The Query Transaction API needs the EasyAccess
+// reference, NOT your client_reference.
+// ─────────────────────────────────────────────
+
+function getProviderReference(apiResponse) {
+  if (!apiResponse) return null;
+
+  try {
+    const data =
+      typeof apiResponse === "string"
+        ? JSON.parse(apiResponse)
+        : apiResponse;
+
+    return data?.reference || null;
+  } catch (err) {
+    console.error("⚠️ Could not parse api_response:", err.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
+// REFUND TRANSACTION SAFELY
+// ─────────────────────────────────────────────
+//
+// IMPORTANT:
+// Only refund if transaction is still pending.
+//
+// This prevents:
+// - double refunds
+// - webhook + verifier both refunding
+// - race conditions
+// ─────────────────────────────────────────────
+
+async function refundTransaction(db, tx, apiResponse) {
+  await db.begin(async (sql) => {
+    // First mark the transaction as failed ONLY if
+    // it is still pending.
+    const updated = await sql`
+      UPDATE transactions
+      SET
+        status = 'failed',
+        balance_after = (
+          SELECT balance + ${Number(tx.amount)}
+          FROM users
+          WHERE id = ${tx.user_id}
+        ),
+        api_response = ${JSON.stringify(apiResponse)},
+        updated_at = NOW()
+      WHERE id = ${tx.id}
+        AND status = 'pending'
+      RETURNING id
+    `;
+
+    // If nothing was updated, another process
+    // already resolved/refunded this transaction.
+    if (!updated.length) {
+      console.log(
+        `ℹ️ Refund skipped: ${tx.reference} already resolved`
+      );
+      return;
+    }
+
+    // Refund the customer's wallet.
+    await sql`
+      UPDATE users
+      SET balance = balance + ${Number(tx.amount)}
+      WHERE id = ${tx.user_id}
+    `;
+  });
+}
+
+// ─────────────────────────────────────────────
+// MARK SUCCESS SAFELY
+// ─────────────────────────────────────────────
+
+async function markSuccess(db, tx, apiResponse) {
+  const updated = await db`
+    UPDATE transactions
+    SET
+      status = 'success',
+      api_amount = ${apiResponse.amount || 0},
+      api_response = ${JSON.stringify(apiResponse)},
+      updated_at = NOW()
+    WHERE id = ${tx.id}
+      AND status = 'pending'
+    RETURNING id
+  `;
+
+  if (updated.length) {
+    console.log(`✅ Verify: ${tx.reference} → SUCCESS`);
+  } else {
+    console.log(
+      `ℹ️ Verify: ${tx.reference} already resolved by another process`
+    );
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -51,35 +140,35 @@ function isPending(status) {
 
 async function verifyPendingTransactions(db) {
   try {
-    /**
+    /*
      * IMPORTANT:
      *
-     * provider_reference is extracted from api_response.
+     * We are intentionally NOT doing:
      *
-     * Your transaction.reference is your own client_reference:
-     *     ref_1785526778823
+     * WHERE type = 'data'
      *
-     * EasyAccess query API needs:
-     *     DATA9a1e1485ad9273
-     *
-     * So we first read the provider reference from api_response.
+     * because EasyAccess Query Transaction API can be
+     * used to verify transactions from other services too.
      */
 
     const pending = await db`
       SELECT
         t.id,
-        t.reference AS client_reference,
+        t.reference,
         t.user_id,
+        t.type,
         t.amount,
-        t.balance_before,
-        t.balance_after,
+        t.status,
         t.api_response,
-        u.balance AS current_balance
+        t.created_at
       FROM transactions t
-      JOIN users u ON u.id = t.user_id
-      WHERE t.type = 'data'
-        AND t.status = 'pending'
-        AND t.created_at < NOW() - (${PENDING_AGE_MINUTES} * INTERVAL '1 minute')
+      WHERE t.status = 'pending'
+        AND t.created_at < NOW() - INTERVAL '${PENDING_AGE_MINUTES} minutes'
+        AND t.type NOT IN (
+          'tapam-transfer',
+          'reward-to-wallet',
+          'cashback'
+        )
       ORDER BY t.created_at ASC
       LIMIT ${BATCH_SIZE}
     `;
@@ -89,59 +178,46 @@ async function verifyPendingTransactions(db) {
     }
 
     console.log(
-      `🔍 Verifying ${pending.length} pending data transaction(s)...`
+      `🔍 Verifying ${pending.length} pending transaction(s)...`
     );
 
     for (const tx of pending) {
       try {
         // ─────────────────────────────────────────
-        // Get EasyAccess provider reference
+        // GET PROVIDER REFERENCE
         // ─────────────────────────────────────────
 
-        let savedApiResponse = {};
-
-        try {
-          if (tx.api_response) {
-            savedApiResponse =
-              typeof tx.api_response === "string"
-                ? JSON.parse(tx.api_response)
-                : tx.api_response;
-          }
-        } catch {
-          savedApiResponse = {};
-        }
-
-        const providerReference =
-          savedApiResponse?.reference ||
-          savedApiResponse?.provider_reference ||
-          savedApiResponse?.easyaccess_reference ||
-          null;
-
-        /**
-         * If we don't have the provider reference yet,
-         * don't query using the client reference.
-         *
-         * This prevents:
-         *
-         * ref_1785526778823
-         *
-         * being incorrectly sent to EasyAccess.
-         */
+        const providerReference = getProviderReference(
+          tx.api_response
+        );
 
         if (!providerReference) {
+          /*
+           * This is important.
+           *
+           * If the original EasyAccess purchase request
+           * timed out before returning a response, we may
+           * not have the provider reference yet.
+           *
+           * DO NOT REFUND.
+           *
+           * The webhook or another mechanism may still
+           * resolve it.
+           */
+
           console.log(
-            `⏳ Verify: ${tx.client_reference} has no EasyAccess provider reference yet.`
+            `⏳ Verify: ${tx.reference} has no EasyAccess provider reference yet.`
           );
 
           continue;
         }
 
         console.log(
-          `🔎 Querying EasyAccess transaction: ${providerReference}`
+          `🔎 Verify: ${tx.reference} → EA reference ${providerReference}`
         );
 
         // ─────────────────────────────────────────
-        // Query EasyAccess
+        // QUERY EASYACCESS
         // ─────────────────────────────────────────
 
         const response = await axios.post(
@@ -163,51 +239,49 @@ async function verifyPendingTransactions(db) {
 
         const code = Number(data?.code);
         const queryStatus = normalizeStatus(data?.status);
-        const retrievedStatus = normalizeStatus(data?.retrieved_status);
-
-        console.log(
-          `🔍 EasyAccess query ${providerReference}:`,
-          {
-            code,
-            status: queryStatus,
-            retrieved_status: retrievedStatus,
-          }
+        const retrievedStatus = normalizeStatus(
+          data?.retrieved_status
         );
+
+        console.log(`🔍 EA Query: ${tx.reference}`, {
+          type: tx.type,
+          provider_reference: providerReference,
+          code,
+          status: queryStatus,
+          retrieved_status: retrievedStatus,
+        });
 
         // ─────────────────────────────────────────
         // SUCCESS
         // ─────────────────────────────────────────
 
+        /*
+         * The important field here is retrieved_status.
+         *
+         * Example:
+         *
+         * code: 200
+         * status: success
+         * retrieved_status: Successful
+         *
+         * This is definitely successful.
+         */
+
         if (
           isSuccess(retrievedStatus) ||
           isSuccess(queryStatus)
         ) {
-          const apiResponse = {
+          await markSuccess(db, tx, {
             source: "verify_job",
             code,
             status: data?.status,
             retrieved_status: data?.retrieved_status,
+            reference: data?.reference,
+            amount: data?.amount,
             message: data?.message,
             true_response: data?.true_response,
-            reference: data?.reference || providerReference,
-            amount: data?.amount,
             transaction_date: data?.transaction_date,
-          };
-
-          await db`
-            UPDATE transactions
-            SET
-              status = 'success',
-              api_amount = ${data?.amount ? Number(data.amount) : 0},
-              api_response = ${JSON.stringify(apiResponse)},
-              updated_at = NOW()
-            WHERE id = ${tx.id}
-              AND status = 'pending'
-          `;
-
-          console.log(
-            `✅ Verify: ${tx.client_reference} → SUCCESS`
-          );
+          });
 
           continue;
         }
@@ -216,147 +290,95 @@ async function verifyPendingTransactions(db) {
         // FAILED
         // ─────────────────────────────────────────
 
+        /*
+         * ONLY refund when EasyAccess explicitly tells us
+         * that the transaction failed.
+         *
+         * Do NOT treat 404 as failed.
+         */
+
         if (
           isFailed(retrievedStatus) ||
           isFailed(queryStatus)
         ) {
-          /**
-           * VERY IMPORTANT:
-           *
-           * Only refund if transaction is STILL pending.
-           *
-           * If webhook already changed it to failed,
-           * this UPDATE will affect 0 rows.
-           *
-           * Therefore the customer cannot receive
-           * the refund twice.
-           */
-
-          await db.begin(async (sql) => {
-            const locked = await sql`
-              SELECT
-                id,
-                user_id,
-                amount,
-                balance_before,
-                status
-              FROM transactions
-              WHERE id = ${tx.id}
-              FOR UPDATE
-            `;
-
-            if (!locked.length) {
-              return;
-            }
-
-            const currentTx = locked[0];
-
-            // Webhook may have already processed it.
-            if (currentTx.status !== "pending") {
-              console.log(
-                `ℹ️ Verify: ${tx.client_reference} already resolved as ${currentTx.status}. No refund made.`
-              );
-
-              return;
-            }
-
-            const refundAmount = Number(currentTx.amount);
-
-            // Refund exactly the amount originally deducted.
-            await sql`
-              UPDATE users
-              SET balance = balance + ${refundAmount}
-              WHERE id = ${currentTx.user_id}
-            `;
-
-            /**
-             * The balance_after here is the balance AFTER refund.
-             *
-             * We calculate it from the user's current balance
-             * before applying the refund.
-             */
-            const currentUser = await sql`
-              SELECT balance
-              FROM users
-              WHERE id = ${currentTx.user_id}
-              FOR UPDATE
-            `;
-
-            const balanceAfterRefund =
-              Number(currentUser[0].balance);
-
-            const apiResponse = {
-              source: "verify_job",
-              code,
-              status: data?.status,
-              retrieved_status: data?.retrieved_status,
-              message: data?.message,
-              true_response: data?.true_response,
-              reference: data?.reference || providerReference,
-              amount: data?.amount,
-              transaction_date: data?.transaction_date,
-              refunded: true,
-              refund_amount: refundAmount,
-            };
-
-            await sql`
-              UPDATE transactions
-              SET
-                status = 'failed',
-                api_amount = ${
-                  data?.amount ? Number(data.amount) : 0
-                },
-                balance_after = ${balanceAfterRefund},
-                api_response = ${JSON.stringify(apiResponse)},
-                updated_at = NOW()
-              WHERE id = ${currentTx.id}
-                AND status = 'pending'
-            `;
-
-            console.log(
-              `❌ Verify: ${tx.client_reference} → FAILED`
-            );
-
-            console.log(
-              `💰 Refund: ₦${refundAmount} → user ${currentTx.user_id}`
-            );
+          await refundTransaction(db, tx, {
+            source: "verify_job",
+            code,
+            status: data?.status,
+            retrieved_status: data?.retrieved_status,
+            reference: data?.reference,
+            amount: data?.amount,
+            message: data?.message,
+            true_response: data?.true_response,
+            transaction_date: data?.transaction_date,
           });
 
-          continue;
-        }
-
-        // ─────────────────────────────────────────
-        // 404 / NO RECORD
-        // ─────────────────────────────────────────
-
-        if (code === 404) {
-          /**
-           * DO NOT refund immediately.
-           *
-           * A timeout can happen after EasyAccess has received
-           * the request but before your server receives the response.
-           *
-           * Give EasyAccess more time to register the transaction.
-           */
-
           console.log(
-            `⏳ Verify: ${tx.client_reference} → EasyAccess record not found yet. Will retry.`
+            `❌ Verify: ${tx.reference} → FAILED — ₦${tx.amount} refunded`
           );
 
           continue;
         }
 
         // ─────────────────────────────────────────
-        // UNKNOWN
+        // 400 / 401
+        // ─────────────────────────────────────────
+        //
+        // Your documentation says 400/401 are failed
+        // request codes. However, we still require that
+        // the transaction itself is explicitly failed
+        // before refunding.
+        //
+        // This avoids refunding because of a temporary
+        // provider/API issue.
+        // ─────────────────────────────────────────
+
+        if (code === 400 || code === 401) {
+          console.log(
+            `⚠️ Verify: ${tx.reference} returned code ${code} but no definitive failed transaction status.`
+          );
+
+          continue;
+        }
+
+        // ─────────────────────────────────────────
+        // 404 — NO RECORD FOUND
+        // ─────────────────────────────────────────
+
+        if (code === 404) {
+          console.log(
+            `⏳ Verify: ${tx.reference} → EasyAccess has no record for provider reference ${providerReference}.`
+          );
+
+          /*
+           * DO NOT REFUND.
+           *
+           * Retry during the next verification cycle.
+           */
+
+          continue;
+        }
+
+        // ─────────────────────────────────────────
+        // UNKNOWN / PENDING
         // ─────────────────────────────────────────
 
         console.log(
-          `⏳ Verify: ${tx.client_reference} unresolved. Will retry next cycle.`
+          `⏳ Verify: ${tx.reference} still unresolved — retrying later.`
         );
-
       } catch (queryErr) {
+        /*
+         * VERY IMPORTANT:
+         *
+         * A query/network error does NOT mean the
+         * transaction failed.
+         *
+         * Therefore:
+         * DO NOT REFUND.
+         */
+
         console.error(
-          `⚠️ Verify: failed to query ${tx.client_reference}:`,
+          `⚠️ Verify: failed to query ${tx.reference}:`,
           queryErr.response?.data || queryErr.message
         );
       }
@@ -375,19 +397,15 @@ async function verifyPendingTransactions(db) {
 
 module.exports = function startVerifyJob(db) {
   console.log(
-    "🕐 Pending transaction verifier started"
+    "🕐 Pending EasyAccess transaction verifier started"
   );
 
-  /**
-   * First check after 1 minute.
-   */
+  // First run after 1 minute
   setTimeout(() => {
     verifyPendingTransactions(db);
   }, 60 * 1000);
 
-  /**
-   * Then every 5 minutes.
-   */
+  // Then every 5 minutes
   setInterval(() => {
     verifyPendingTransactions(db);
   }, INTERVAL_MS);
