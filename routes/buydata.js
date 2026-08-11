@@ -39,87 +39,6 @@ function isFailedCode(code) {
 }
 
 // ─────────────────────────────────────────────
-// REFUND FUNCTION
-// Refund is protected by refunded = false.
-// This prevents webhook + verifier from refunding twice.
-// ─────────────────────────────────────────────
-
-async function refundTransaction(reference, reason, apiResponse = {}) {
-  return db.begin(async (tx) => {
-    const rows = await tx`
-      SELECT
-        t.id,
-        t.user_id,
-        t.amount,
-        t.status,
-        t.refunded,
-        t.balance_before,
-        u.balance AS current_balance
-      FROM transactions t
-      JOIN users u ON u.id = t.user_id
-      WHERE t.reference = ${reference}
-      FOR UPDATE OF t, u
-    `;
-
-    if (!rows.length) {
-      return {
-        refunded: false,
-        found: false,
-      };
-    }
-
-    const transaction = rows[0];
-
-    // Already refunded/resolved
-    if (transaction.refunded === true || transaction.status !== "pending") {
-      return {
-        refunded: false,
-        found: true,
-        alreadyResolved: true,
-        status: transaction.status,
-      };
-    }
-
-    const amount = Number(transaction.amount);
-    const currentBalance = Number(transaction.current_balance);
-    const newBalance = currentBalance + amount;
-
-    await tx`
-      UPDATE users
-      SET balance = balance + ${amount}
-      WHERE id = ${transaction.user_id}
-    `;
-
-    await tx`
-      UPDATE transactions
-      SET
-        status = 'failed',
-        refunded = true,
-        balance_after = ${newBalance},
-        api_response = ${JSON.stringify({
-          ...apiResponse,
-          refund: {
-            refunded: true,
-            reason,
-            amount,
-          },
-        })},
-        updated_at = NOW()
-      WHERE id = ${transaction.id}
-        AND status = 'pending'
-        AND refunded = false
-    `;
-
-    return {
-      refunded: true,
-      found: true,
-      amount,
-      balance_after: newBalance,
-    };
-  });
-}
-
-// ─────────────────────────────────────────────
 // BUY DATA
 // POST /api/buydata
 // ─────────────────────────────────────────────
@@ -133,17 +52,11 @@ router.post("/", async (req, res) => {
     client_reference,
   } = req.body;
 
-  // ─────────────────────────────────────────────
-  // VALIDATION
-  // ─────────────────────────────────────────────
-
   if (
     !user_id ||
-    network === undefined ||
-    network === null ||
-    dataplan === undefined ||
-    dataplan === null ||
+    !network ||
     !mobile_no ||
+    !dataplan ||
     !client_reference
   ) {
     return res.status(400).json({
@@ -153,7 +66,7 @@ router.post("/", async (req, res) => {
     });
   }
 
-  if (!/^\d{11}$/.test(String(mobile_no))) {
+  if (!/^\d{11}$/.test(mobile_no)) {
     return res.status(400).json({
       success: false,
       status: "failed",
@@ -162,9 +75,9 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    // ─────────────────────────────────────────────
-    // LOCK USER + DEDUCT WALLET + CREATE PENDING TX
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────
+    // 1. LOCK USER + DEDUCT WALLET
+    // ─────────────────────────────────────────
 
     const result = await db.begin(async (tx) => {
       const duplicate = await tx`
@@ -181,7 +94,7 @@ router.post("/", async (req, res) => {
       const users = await tx`
         SELECT id, balance
         FROM users
-        WHERE id = ${Number(user_id)}
+        WHERE id = ${user_id}
         FOR UPDATE
       `;
 
@@ -194,7 +107,7 @@ router.post("/", async (req, res) => {
       const plans = await tx`
         SELECT plan_name, custom_price
         FROM custom_data_prices
-        WHERE plan_id = ${Number(dataplan)}
+        WHERE plan_id = ${dataplan}
           AND status = 'active'
         LIMIT 1
       `;
@@ -205,17 +118,16 @@ router.post("/", async (req, res) => {
 
       const plan = plans[0];
       const price = Number(plan.custom_price);
-      const currentBalance = Number(user.balance);
 
       if (!Number.isFinite(price) || price <= 0) {
         throw new Error("INVALID_PLAN_PRICE");
       }
 
-      if (currentBalance < price) {
+      if (Number(user.balance) < price) {
         throw new Error("INSUFFICIENT_BALANCE");
       }
 
-      const balanceBefore = currentBalance;
+      const balanceBefore = Number(user.balance);
       const balanceAfter = balanceBefore - price;
 
       await tx`
@@ -228,6 +140,7 @@ router.post("/", async (req, res) => {
         INSERT INTO transactions (
           user_id,
           reference,
+          api_reference,
           provider_reference,
           type,
           amount,
@@ -245,13 +158,14 @@ router.post("/", async (req, res) => {
         VALUES (
           ${user.id},
           ${client_reference},
+          ${client_reference},
           NULL,
           'data',
           ${price},
           0,
           'pending',
-          false,
-          ${String(network)},
+          FALSE,
+          ${network},
           ${plan.plan_name},
           ${mobile_no},
           'wallet',
@@ -261,26 +175,30 @@ router.post("/", async (req, res) => {
         )
       `;
 
-      console.log("💰 Wallet deducted:", {
-        reference: client_reference,
-        user_id: user.id,
-        amount: price,
-        balance_before: balanceBefore,
-        balance_after: balanceAfter,
-      });
-
       return {
-        user,
+        userId: user.id,
         plan,
         price,
-        balance_before: balanceBefore,
-        balance_after: balanceAfter,
+        balanceBefore,
+        balanceAfter,
       };
     });
 
-    // ─────────────────────────────────────────────
-    // CALL EASYACCESS
-    // ─────────────────────────────────────────────
+    console.log("💰 Wallet deducted:", {
+      reference: client_reference,
+      user_id: result.userId,
+      amount: result.price,
+      balance_before: result.balanceBefore,
+      balance_after: result.balanceAfter,
+    });
+
+    // ─────────────────────────────────────────
+    // 2. CALL EASYACCESS
+    //
+    // IMPORTANT:
+    // validateStatus prevents Axios from throwing
+    // when EasyAccess returns 400.
+    // ─────────────────────────────────────────
 
     let response;
 
@@ -308,95 +226,32 @@ router.post("/", async (req, res) => {
             "Cache-Control": "no-cache",
             "Content-Type": "application/json",
           },
-          timeout: 20000,
+
+          timeout: 30000,
+
+          // IMPORTANT
+          // Do not throw automatically on 400/401.
+          validateStatus: () => true,
         }
       );
 
       console.log("📡 EasyAccess Response:", response.data);
     } catch (apiErr) {
-      const providerResponse = apiErr.response?.data;
+      // ───────────────────────────────────────
+      // TRUE NETWORK / TIMEOUT ERROR
+      // We cannot know whether EA received it.
+      // Leave pending.
+      // ───────────────────────────────────────
+
+      const isTimeout =
+        apiErr.code === "ECONNABORTED" ||
+        apiErr.code === "ETIMEDOUT" ||
+        apiErr.message?.toLowerCase().includes("timeout");
 
       console.error(
-        "❌ EA API ERROR:",
-        providerResponse || apiErr.message
+        `❌ EA NETWORK ERROR (${isTimeout ? "TIMEOUT" : "NETWORK"}):`,
+        apiErr.message
       );
-
-      // If EasyAccess actually returned a response, process it.
-      // A timeout/network error is NOT automatically refunded because
-      // the provider may have processed the transaction.
-      if (providerResponse) {
-        const ea = providerResponse;
-
-        const code = Number(ea?.code);
-        const eaStatus = normalizeStatus(ea?.status);
-
-        const providerReference =
-          ea?.reference || null;
-
-        const apiLog = {
-          source: "purchase_api_error_response",
-          code,
-          status: ea?.status,
-          message: ea?.message,
-          true_response: ea?.true_response,
-          reference: providerReference,
-          amount: ea?.amount,
-          network: ea?.network,
-          mobileno: ea?.mobileno,
-          dataplan: ea?.dataplan,
-          client_reference: ea?.client_reference || client_reference,
-          transaction_date: ea?.transaction_date,
-        };
-
-        // Save provider reference before resolving.
-        if (providerReference) {
-          await db`
-            UPDATE transactions
-            SET
-              provider_reference = ${providerReference},
-              api_amount = ${Number(ea?.amount || 0)},
-              api_response = ${JSON.stringify(apiLog)},
-              updated_at = NOW()
-            WHERE reference = ${client_reference}
-          `;
-        }
-
-        // Definitive failure → refund
-        if (isFailed(eaStatus) || isFailedCode(code)) {
-          const refund = await refundTransaction(
-            client_reference,
-            "EasyAccess purchase response failed",
-            apiLog
-          );
-
-          return res.status(400).json({
-            success: false,
-            status: "failed",
-            refunded: refund.refunded || refund.alreadyResolved === true,
-            message: getBestMessage(
-              ea,
-              "Purchase failed. Your wallet has been refunded."
-            ),
-            reference: client_reference,
-          });
-        }
-
-        // Anything else is pending.
-        return res.status(202).json({
-          success: true,
-          status: "pending",
-          message:
-            "Your transaction is being processed. We will confirm it shortly.",
-          reference: client_reference,
-        });
-      }
-
-      // ─────────────────────────────────────────────
-      // TIMEOUT / NETWORK ERROR
-      // DO NOT REFUND.
-      // The provider may already have processed it.
-      // Verifier/webhook will resolve it.
-      // ─────────────────────────────────────────────
 
       await db`
         UPDATE transactions
@@ -404,11 +259,12 @@ router.post("/", async (req, res) => {
           status = 'pending',
           api_response = ${JSON.stringify({
             source: "purchase_api",
-            error: apiErr.code || "NETWORK_ERROR",
+            error: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
             message: apiErr.message,
           })},
           updated_at = NOW()
         WHERE reference = ${client_reference}
+          AND status = 'pending'
       `;
 
       return res.status(202).json({
@@ -420,74 +276,81 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // ─────────────────────────────────────────────
-    // NORMAL EASYACCESS RESPONSE
-    // ─────────────────────────────────────────────
+    const ea = response.data || {};
 
-    const ea = response.data;
+    const code = Number(ea.code);
 
-    const code = Number(ea?.code);
-    const eaStatus = normalizeStatus(ea?.status);
+    const eaStatus = normalizeStatus(ea.status);
+    const retrievedStatus = normalizeStatus(ea.retrieved_status);
 
-    // IMPORTANT:
-    // EasyAccess provider reference is NOT our client_reference.
+    // EasyAccess provider reference.
     const providerReference =
-      ea?.reference || null;
+      ea.reference ||
+      ea.provider_reference ||
+      null;
+
+    // EasyAccess client/API reference.
+    const apiReference =
+      ea.client_reference ||
+      client_reference;
 
     const apiLog = {
       source: "purchase_api",
       code,
-      status: ea?.status,
-      message: ea?.message,
-      true_response: ea?.true_response,
-      reference: providerReference,
-      amount: ea?.amount,
-      network: ea?.network,
-      mobileno: ea?.mobileno,
-      dataplan: ea?.dataplan,
-      client_reference:
-        ea?.client_reference || client_reference,
-      transaction_date: ea?.transaction_date,
+      status: ea.status || null,
+      retrieved_status: ea.retrieved_status || null,
+      message: ea.message || null,
+      true_response: ea.true_response || null,
+      reference: ea.reference || null,
+      provider_reference: providerReference,
+      client_reference: ea.client_reference || null,
+      api_reference: apiReference,
+      amount: ea.amount ?? null,
+      network: ea.network || null,
+      mobileno: ea.mobileno || null,
+      dataplan: ea.dataplan || null,
+      transaction_date: ea.transaction_date || null,
     };
 
-    // Save provider reference immediately.
-    if (providerReference) {
-      await db`
-        UPDATE transactions
-        SET
-          provider_reference = ${providerReference},
-          api_amount = ${Number(ea?.amount || 0)},
-          api_response = ${JSON.stringify(apiLog)},
-          updated_at = NOW()
-        WHERE reference = ${client_reference}
-      `;
-    } else {
-      await db`
-        UPDATE transactions
-        SET
-          api_amount = ${Number(ea?.amount || 0)},
-          api_response = ${JSON.stringify(apiLog)},
-          updated_at = NOW()
-        WHERE reference = ${client_reference}
-      `;
-    }
+    // ─────────────────────────────────────────
+    // 3. SAVE PROVIDER REFERENCE IMMEDIATELY
+    // ─────────────────────────────────────────
 
-    // ─────────────────────────────────────────────
-    // SUCCESS
-    // ─────────────────────────────────────────────
+    await db`
+      UPDATE transactions
+      SET
+        provider_reference = ${providerReference},
+        api_reference = ${apiReference},
+        api_amount = ${ea.amount ?? 0},
+        api_response = ${JSON.stringify(apiLog)},
+        updated_at = NOW()
+      WHERE reference = ${client_reference}
+    `;
 
-    if (isSuccess(eaStatus) || isSuccessCode(code)) {
+    // ─────────────────────────────────────────
+    // 4. SUCCESS
+    // ─────────────────────────────────────────
+
+    if (
+      isSuccess(eaStatus) ||
+      isSuccess(retrievedStatus) ||
+      isSuccessCode(code)
+    ) {
       await db`
         UPDATE transactions
         SET
           status = 'success',
-          refunded = false,
-          api_amount = ${Number(ea?.amount || 0)},
+          provider_reference = ${providerReference},
+          api_reference = ${apiReference},
+          api_amount = ${ea.amount ?? 0},
           api_response = ${JSON.stringify(apiLog)},
           updated_at = NOW()
         WHERE reference = ${client_reference}
-          AND status = 'pending'
       `;
+
+      console.log(
+        `✅ EasyAccess SUCCESS: ${client_reference} → ${providerReference}`
+      );
 
       return res.json({
         success: true,
@@ -497,43 +360,114 @@ router.post("/", async (req, res) => {
           "Data purchase successful"
         ),
         reference: client_reference,
+        provider_reference: providerReference,
       });
     }
 
-    // ─────────────────────────────────────────────
-    // FAILED
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────
+    // 5. FAILED
+    //
+    // Refund exactly once.
+    // ─────────────────────────────────────────
 
-    if (isFailed(eaStatus) || isFailedCode(code)) {
-      const refund = await refundTransaction(
-        client_reference,
-        "EasyAccess returned failed status",
-        apiLog
+    if (
+      isFailed(eaStatus) ||
+      isFailed(retrievedStatus) ||
+      isFailedCode(code)
+    ) {
+      const refundResult = await db.begin(async (tx) => {
+        const rows = await tx`
+          SELECT
+            t.id,
+            t.user_id,
+            t.amount,
+            t.status,
+            t.refunded,
+            u.balance
+          FROM transactions t
+          JOIN users u ON u.id = t.user_id
+          WHERE t.reference = ${client_reference}
+          FOR UPDATE OF t, u
+        `;
+
+        if (!rows.length) {
+          throw new Error("TRANSACTION_NOT_FOUND");
+        }
+
+        const transaction = rows[0];
+
+        // Already refunded/resolved.
+        if (
+          transaction.refunded === true ||
+          transaction.status === "failed"
+        ) {
+          return {
+            alreadyResolved: true,
+            balance: Number(transaction.balance),
+          };
+        }
+
+        const amount = Number(transaction.amount);
+        const currentBalance = Number(transaction.balance);
+        const refundedBalance = currentBalance + amount;
+
+        await tx`
+          UPDATE users
+          SET balance = balance + ${amount}
+          WHERE id = ${transaction.user_id}
+        `;
+
+        await tx`
+          UPDATE transactions
+          SET
+            status = 'failed',
+            refunded = TRUE,
+            provider_reference = ${providerReference},
+            api_reference = ${apiReference},
+            api_amount = ${ea.amount ?? 0},
+            balance_after = ${refundedBalance},
+            api_response = ${JSON.stringify(apiLog)},
+            updated_at = NOW()
+          WHERE id = ${transaction.id}
+        `;
+
+        return {
+          alreadyResolved: false,
+          balance: refundedBalance,
+        };
+      });
+
+      console.log(
+        `❌ EasyAccess FAILED: ${client_reference} → REFUNDED`
       );
 
       return res.status(400).json({
         success: false,
         status: "failed",
-        refunded: refund.refunded || refund.alreadyResolved === true,
-        message: getBestMessage(
-          ea,
-          "Purchase failed. Your wallet has been refunded."
-        ),
+        refunded: true,
+        message:
+          getBestMessage(
+            ea,
+            "Purchase failed. Your wallet has been refunded."
+          ),
         reference: client_reference,
+        provider_reference: providerReference,
       });
     }
 
-    // ─────────────────────────────────────────────
-    // UNKNOWN / PENDING
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────
+    // 6. UNKNOWN / PENDING
+    // ─────────────────────────────────────────
 
     await db`
       UPDATE transactions
       SET
         status = 'pending',
+        provider_reference = ${providerReference},
+        api_reference = ${apiReference},
+        api_response = ${JSON.stringify(apiLog)},
         updated_at = NOW()
       WHERE reference = ${client_reference}
-        AND status = 'pending'
     `;
 
     return res.status(202).json({
@@ -542,9 +476,10 @@ router.post("/", async (req, res) => {
       message:
         "Transaction is being processed. We will confirm it shortly.",
       reference: client_reference,
+      provider_reference: providerReference,
     });
   } catch (err) {
-    console.error("DATA PURCHASE ERROR:", err);
+    console.error("❌ DATA PURCHASE ERROR:", err);
 
     const errorMap = {
       DUPLICATE_REFERENCE: {
@@ -567,6 +502,10 @@ router.post("/", async (req, res) => {
         code: 400,
         message: "Invalid data plan price",
       },
+      TRANSACTION_NOT_FOUND: {
+        code: 404,
+        message: "Transaction not found",
+      },
     };
 
     const known = errorMap[err.message];
@@ -588,7 +527,7 @@ router.post("/", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// BENEFICIARIES
+// GET BENEFICIARIES
 // ─────────────────────────────────────────────
 
 router.get("/beneficiaries", async (req, res) => {
@@ -625,7 +564,7 @@ router.get("/beneficiaries", async (req, res) => {
       phones: rows.map((r) => r.phone),
     });
   } catch (err) {
-    console.error("Beneficiaries error:", err.message);
+    console.error("❌ Beneficiaries error:", err.message);
 
     return res.status(500).json({
       success: false,

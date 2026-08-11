@@ -8,7 +8,6 @@ const QUERY_URL =
 const API_TOKEN = process.env.EASY_ACCESS_TOKEN;
 
 const INTERVAL_MS = 5 * 60 * 1000;
-const FIRST_RUN_DELAY_MS = 60 * 1000;
 const PENDING_AGE_MINUTES = 3;
 const BATCH_SIZE = 20;
 
@@ -26,125 +25,6 @@ function isFailed(status) {
   return normalizeStatus(status) === "failed";
 }
 
-function isSuccessCode(code) {
-  return [200, 201].includes(Number(code));
-}
-
-function isFailedCode(code) {
-  return [400, 401].includes(Number(code));
-}
-
-// ─────────────────────────────────────────────
-// RESOLVE SUCCESS
-// ─────────────────────────────────────────────
-
-async function markSuccess(db, tx, data) {
-  await db`
-    UPDATE transactions
-    SET
-      status = 'success',
-      refunded = false,
-      api_amount = ${Number(data?.amount || 0)},
-      api_response = ${JSON.stringify({
-        source: "verify_job",
-        code: Number(data?.code),
-        status: data?.status,
-        retrieved_status: data?.retrieved_status,
-        message: data?.message,
-        true_response: data?.true_response,
-        reference: data?.reference,
-        transaction_date: data?.transaction_date,
-      })},
-      updated_at = NOW()
-    WHERE id = ${tx.id}
-      AND status = 'pending'
-      AND refunded = false
-  `;
-}
-
-// ─────────────────────────────────────────────
-// REFUND FAILED TRANSACTION
-// ATOMIC + DOUBLE REFUND PROTECTION
-// ─────────────────────────────────────────────
-
-async function refundFailed(db, tx, data) {
-  return db.begin(async (sql) => {
-    const rows = await sql`
-      SELECT
-        t.id,
-        t.user_id,
-        t.amount,
-        t.status,
-        t.refunded,
-        u.balance
-      FROM transactions t
-      JOIN users u ON u.id = t.user_id
-      WHERE t.id = ${tx.id}
-      FOR UPDATE OF t, u
-    `;
-
-    if (!rows.length) {
-      return false;
-    }
-
-    const current = rows[0];
-
-    // Already processed.
-    if (
-      current.status !== "pending" ||
-      current.refunded === true
-    ) {
-      return false;
-    }
-
-    const amount = Number(current.amount);
-    const currentBalance = Number(current.balance);
-    const refundedBalance = currentBalance + amount;
-
-    await sql`
-      UPDATE users
-      SET balance = balance + ${amount}
-      WHERE id = ${current.user_id}
-    `;
-
-    await sql`
-      UPDATE transactions
-      SET
-        status = 'failed',
-        refunded = true,
-        balance_after = ${refundedBalance},
-        api_amount = ${Number(data?.amount || 0)},
-        api_response = ${JSON.stringify({
-          source: "verify_job",
-          code: Number(data?.code),
-          status: data?.status,
-          retrieved_status: data?.retrieved_status,
-          message: data?.message,
-          true_response: data?.true_response,
-          reference: data?.reference,
-          transaction_date: data?.transaction_date,
-          refund: {
-            refunded: true,
-            amount,
-          },
-        })},
-        updated_at = NOW()
-      WHERE id = ${current.id}
-        AND status = 'pending'
-        AND refunded = false
-    `;
-
-    return true;
-  });
-}
-
-// ─────────────────────────────────────────────
-// VERIFY PENDING TRANSACTIONS
-// IMPORTANT:
-// Query EasyAccess using provider_reference,
-// NOT our client reference.
-// ─────────────────────────────────────────────
-
 async function verifyPendingTransactions(db) {
   try {
     const pending = await db`
@@ -152,19 +32,18 @@ async function verifyPendingTransactions(db) {
         t.id,
         t.reference,
         t.provider_reference,
+        t.api_reference,
         t.user_id,
         t.type,
         t.amount,
         t.status,
-        t.refunded,
-        t.created_at
+        t.refunded
       FROM transactions t
       WHERE t.status = 'pending'
-        AND t.refunded = false
         AND t.provider_reference IS NOT NULL
         AND t.provider_reference != ''
         AND t.created_at < NOW() -
-          (${PENDING_AGE_MINUTES} * INTERVAL '1 minute')
+          INTERVAL '3 minutes'
       ORDER BY t.created_at ASC
       LIMIT ${BATCH_SIZE}
     `;
@@ -177,16 +56,21 @@ async function verifyPendingTransactions(db) {
       `🔍 Verifying ${pending.length} pending EasyAccess transaction(s)...`
     );
 
-    for (const tx of pending) {
+    for (const transaction of pending) {
       try {
+        // IMPORTANT:
+        // Query EasyAccess with provider reference.
+        const queryReference =
+          transaction.provider_reference;
+
         console.log(
-          `🔎 Checking ${tx.reference} using provider reference ${tx.provider_reference}`
+          `🔎 Querying EasyAccess: ${transaction.reference} → ${queryReference}`
         );
 
         const response = await axios.post(
           QUERY_URL,
           {
-            reference: tx.provider_reference,
+            reference: queryReference,
           },
           {
             headers: {
@@ -195,84 +79,202 @@ async function verifyPendingTransactions(db) {
               "Content-Type": "application/json",
             },
             timeout: 15000,
+
+            // Do not throw on provider 4xx.
+            validateStatus: () => true,
           }
         );
 
-        const data = response.data;
+        const data = response.data || {};
 
-        const code = Number(data?.code);
-        const queryStatus = data?.status;
-        const retrievedStatus = data?.retrieved_status;
+        const code = Number(data.code);
+
+        const queryStatus =
+          normalizeStatus(data.status);
+
+        const retrievedStatus =
+          normalizeStatus(data.retrieved_status);
 
         console.log(
-          `🔍 Query result ${tx.reference}:`,
+          `🔍 EasyAccess Query ${transaction.reference}:`,
           {
-            provider_reference: tx.provider_reference,
+            provider_reference: queryReference,
             code,
-            status: queryStatus,
-            retrieved_status: retrievedStatus,
+            status: data.status,
+            retrieved_status: data.retrieved_status,
           }
         );
 
-        // ─────────────────────────────────────────────
+        const apiResponse = {
+          source: "verify_job",
+          code,
+          status: data.status || null,
+          retrieved_status:
+            data.retrieved_status || null,
+          message: data.message || null,
+          true_response:
+            data.true_response || null,
+          reference: data.reference || null,
+          amount: data.amount ?? null,
+          transaction_date:
+            data.transaction_date || null,
+        };
+
+        // ─────────────────────────────────────
         // SUCCESS
-        // ─────────────────────────────────────────────
+        // ─────────────────────────────────────
 
         if (
           isSuccess(retrievedStatus) ||
-          isSuccess(queryStatus) ||
-          isSuccessCode(code)
+          isSuccess(queryStatus)
         ) {
-          await markSuccess(db, tx, data);
+          await db`
+            UPDATE transactions
+            SET
+              status = 'success',
+              provider_reference = COALESCE(
+                ${data.reference || null},
+                provider_reference
+              ),
+              api_reference = COALESCE(
+                ${transaction.api_reference},
+                reference
+              ),
+              api_amount = ${data.amount ?? 0},
+              api_response = ${JSON.stringify(apiResponse)},
+              updated_at = NOW()
+            WHERE id = ${transaction.id}
+              AND status = 'pending'
+          `;
 
           console.log(
-            `✅ Verify: ${tx.reference} → SUCCESS`
+            `✅ Verify SUCCESS: ${transaction.reference}`
           );
 
           continue;
         }
 
-        // ─────────────────────────────────────────────
+        // ─────────────────────────────────────
         // FAILED
-        // ─────────────────────────────────────────────
+        // ─────────────────────────────────────
 
         if (
           isFailed(retrievedStatus) ||
-          isFailed(queryStatus) ||
-          isFailedCode(code)
+          isFailed(queryStatus)
         ) {
-          const refunded = await refundFailed(
-            db,
-            tx,
-            data
-          );
+          await db.begin(async (tx) => {
+            const locked = await tx`
+              SELECT
+                t.id,
+                t.user_id,
+                t.amount,
+                t.status,
+                t.refunded,
+                u.balance
+              FROM transactions t
+              JOIN users u ON u.id = t.user_id
+              WHERE t.id = ${transaction.id}
+              FOR UPDATE OF t, u
+            `;
 
-          if (refunded) {
+            if (!locked.length) {
+              return;
+            }
+
+            const current = locked[0];
+
+            // Already refunded.
+            if (
+              current.refunded === true ||
+              current.status === "failed"
+            ) {
+              console.log(
+                `ℹ️ Verify already resolved: ${transaction.reference}`
+              );
+              return;
+            }
+
+            const amount = Number(current.amount);
+
+            const refundedBalance =
+              Number(current.balance) + amount;
+
+            // Refund exactly once.
+            await tx`
+              UPDATE users
+              SET balance = balance + ${amount}
+              WHERE id = ${current.user_id}
+            `;
+
+            await tx`
+              UPDATE transactions
+              SET
+                status = 'failed',
+                refunded = TRUE,
+                api_amount = ${data.amount ?? 0},
+                provider_reference = COALESCE(
+                  ${data.reference || null},
+                  provider_reference
+                ),
+                balance_after = ${refundedBalance},
+                api_response = ${JSON.stringify(apiResponse)},
+                updated_at = NOW()
+              WHERE id = ${current.id}
+            `;
+
             console.log(
-              `❌ Verify: ${tx.reference} → FAILED — ₦${tx.amount} REFUNDED`
+              `💰 Verify REFUND: ${transaction.reference} → ₦${amount}`
             );
-          } else {
-            console.log(
-              `ℹ️ Verify: ${tx.reference} was already resolved`
-            );
-          }
+          });
 
           continue;
         }
 
-        // ─────────────────────────────────────────────
+        // ─────────────────────────────────────
+        // 404 / NO RECORD
+        //
+        // Do NOT refund automatically.
+        // It may mean the provider has not indexed
+        // the transaction yet.
+        // ─────────────────────────────────────
+
+        if (code === 404) {
+          console.log(
+            `⏳ Verify: ${transaction.reference} not found yet on EasyAccess`
+          );
+
+          await db`
+            UPDATE transactions
+            SET
+              api_response = ${JSON.stringify(apiResponse)},
+              updated_at = NOW()
+            WHERE id = ${transaction.id}
+              AND status = 'pending'
+          `;
+
+          continue;
+        }
+
+        // ─────────────────────────────────────
         // UNKNOWN
-        // ─────────────────────────────────────────────
+        // ─────────────────────────────────────
 
         console.log(
-          `⏳ Verify: ${tx.reference} still unresolved — retrying later`
+          `⏳ Verify: ${transaction.reference} unresolved`
         );
-      } catch (queryErr) {
-        // 404 "No Records Found" does NOT mean customer
-        // should immediately be refunded.
+
+        await db`
+          UPDATE transactions
+          SET
+            api_response = ${JSON.stringify(apiResponse)},
+            updated_at = NOW()
+          WHERE id = ${transaction.id}
+            AND status = 'pending'
+        `;
+      } catch (queryError) {
         console.error(
-          `⚠️ Verify query failed for ${tx.reference}:`,
-          queryErr.response?.data || queryErr.message
+          `⚠️ Verify failed for ${transaction.reference}:`,
+          queryError.message
         );
       }
     }
@@ -284,19 +286,17 @@ async function verifyPendingTransactions(db) {
   }
 }
 
-// ─────────────────────────────────────────────
-// START JOB
-// ─────────────────────────────────────────────
-
 module.exports = function startVerifyJob(db) {
   console.log(
     "🕐 Pending EasyAccess transaction verifier started"
   );
 
+  // First check shortly after server starts.
   setTimeout(() => {
     verifyPendingTransactions(db);
-  }, FIRST_RUN_DELAY_MS);
+  }, 60 * 1000);
 
+  // Then every 5 minutes.
   setInterval(() => {
     verifyPendingTransactions(db);
   }, INTERVAL_MS);

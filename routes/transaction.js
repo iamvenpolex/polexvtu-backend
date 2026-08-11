@@ -6,7 +6,7 @@ const db = require("../config/db");
 const jwt = require("jsonwebtoken");
 
 // ─────────────────────────────────────────────
-// AUTH MIDDLEWARE
+// AUTH
 // ─────────────────────────────────────────────
 
 const protect = (req, res, next) => {
@@ -43,23 +43,24 @@ const protect = (req, res, next) => {
 
 // ─────────────────────────────────────────────
 // WALLET TRANSACTIONS
+// GET /api/transactions
 // ─────────────────────────────────────────────
 
 router.get("/", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const walletRows = await db`
+    const rows = await db`
       SELECT
         id,
         reference,
         provider_reference,
+        api_reference,
         type,
         amount,
         status,
         refunded,
         created_at,
-        updated_at,
         phone,
         network,
         description,
@@ -75,7 +76,7 @@ router.get("/", protect, async (req, res) => {
       ORDER BY created_at DESC
     `;
 
-    const walletTransactions = walletRows.map((tx) => {
+    const transactions = rows.map((tx) => {
       let description = "";
       let isCredit = false;
 
@@ -89,18 +90,19 @@ router.get("/", protect, async (req, res) => {
           description =
             tx.status === "failed"
               ? "Airtime Purchase (Refunded)"
-              : tx.status === "pending"
-              ? "Airtime Purchase (Processing)"
               : "Bought Airtime";
           break;
 
         case "data":
-          description =
-            tx.status === "failed"
-              ? "Data Purchase (Refunded)"
-              : tx.status === "pending"
-              ? "Data Purchase (Processing)"
-              : "Bought Data";
+          if (tx.status === "failed") {
+            description =
+              "Data Purchase (Refunded)";
+          } else if (tx.status === "pending") {
+            description =
+              "Data Purchase (Processing)";
+          } else {
+            description = "Bought Data";
+          }
           break;
 
         case "receive":
@@ -116,27 +118,27 @@ router.get("/", protect, async (req, res) => {
       return {
         ...tx,
         amount: Number(tx.amount),
-        balance_before:
-          tx.balance_before !== null
-            ? Number(tx.balance_before)
-            : null,
-        balance_after:
-          tx.balance_after !== null
-            ? Number(tx.balance_after)
-            : null,
+
         source: "wallet",
+
         description,
+
         isCredit,
+
         was_refunded:
-          tx.refunded === true,
+          Boolean(tx.refunded) ||
+          (
+            tx.status === "failed" &&
+            ["airtime", "data"].includes(tx.type)
+          ),
       };
     });
 
-    return res.json(walletTransactions);
+    return res.json(transactions);
   } catch (err) {
     console.error(
       "❌ Error fetching wallet transactions:",
-      err
+      err.message
     );
 
     return res.status(500).json({
@@ -146,7 +148,7 @@ router.get("/", protect, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// REWARDS / CASHBACK
+// REWARDS
 // ─────────────────────────────────────────────
 
 router.get("/rewards", protect, async (req, res) => {
@@ -170,20 +172,21 @@ router.get("/rewards", protect, async (req, res) => {
       ORDER BY created_at DESC
     `;
 
-    const rewards = rows.map((tx) => ({
-      ...tx,
-      amount: Number(tx.amount),
-      description:
-        tx.description || "Airtime cashback reward",
-      isCredit: true,
-      source: "reward",
-    }));
-
-    return res.json(rewards);
+    return res.json(
+      rows.map((tx) => ({
+        ...tx,
+        amount: Number(tx.amount),
+        description:
+          tx.description ||
+          "Airtime cashback reward",
+        isCredit: true,
+        source: "reward",
+      }))
+    );
   } catch (err) {
     console.error(
       "❌ Error fetching reward transactions:",
-      err
+      err.message
     );
 
     return res.status(500).json({
@@ -193,14 +196,14 @@ router.get("/rewards", protect, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// TAPAM TRANSACTIONS
+// TAPAM
 // ─────────────────────────────────────────────
 
 router.get("/tapam", protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const tapamRows = await db`
+    const rows = await db`
       SELECT
         id,
         sender_id,
@@ -219,7 +222,7 @@ router.get("/tapam", protect, async (req, res) => {
       ORDER BY created_at DESC
     `;
 
-    const tapamTransactions = tapamRows.map((tx) => {
+    const transactions = rows.map((tx) => {
       let description = "";
       let isCredit = false;
 
@@ -230,9 +233,11 @@ router.get("/tapam", protect, async (req, res) => {
         description = "Reward moved to wallet";
         isCredit = true;
       } else if (tx.sender_id === userId) {
-        description = `Sent to ${tx.receiver_name}`;
-      } else if (tx.receiver_id === userId) {
-        description = `Received from ${tx.sender_name}`;
+        description =
+          `Sent to ${tx.receiver_name}`;
+      } else {
+        description =
+          `Received from ${tx.sender_name}`;
         isCredit = true;
       }
 
@@ -251,11 +256,11 @@ router.get("/tapam", protect, async (req, res) => {
       };
     });
 
-    return res.json(tapamTransactions);
+    return res.json(transactions);
   } catch (err) {
     console.error(
       "❌ Error fetching TapAm transactions:",
-      err
+      err.message
     );
 
     return res.status(500).json({
