@@ -30,6 +30,7 @@ const bettingRoutes = require("./routes/betting");
 const giftcardsRoutes = require("./routes/giftcards");
 const webhookRoutes = require("./routes/webhook");
 const virtualAccountRoutes = require("./routes/virtualAccount");
+const notificationRoutes = require("./routes/notifications");
 
 // ─────────────────────────────────────────────
 // JOBS
@@ -53,11 +54,15 @@ const allowedOrigins = [
 app.use(
   cors({
     origin(origin, callback) {
+      // Allow requests without an Origin header
+      // such as server-to-server/webhook requests.
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
-      return callback(new Error("Not allowed by CORS"));
+      return callback(
+        new Error("Not allowed by CORS")
+      );
     },
 
     methods: [
@@ -82,8 +87,11 @@ app.use(
 
 // ─────────────────────────────────────────────
 // JSON BODY PARSER
-// Keep the RAW body for PaymentPoint webhook
-// signature verification.
+//
+// IMPORTANT:
+// Keep rawBody because PaymentPoint webhook
+// signature verification requires the original
+// request body.
 // ─────────────────────────────────────────────
 
 app.use(
@@ -95,37 +103,111 @@ app.use(
 );
 
 // ─────────────────────────────────────────────
-// ROUTES
+// AUTH
 // ─────────────────────────────────────────────
 
 app.use("/api/auth", authRoutes);
+
+// ─────────────────────────────────────────────
+// USER
+// ─────────────────────────────────────────────
+
 app.use("/api/user", userRoutes);
+
+// ─────────────────────────────────────────────
+// WALLET
+// ─────────────────────────────────────────────
+
 app.use("/api/wallet", walletRoutes);
+
+// ─────────────────────────────────────────────
+// ADMIN
+// ─────────────────────────────────────────────
+
 app.use("/api/admin", adminRoutes);
+
+// ─────────────────────────────────────────────
+// WITHDRAW
+// ─────────────────────────────────────────────
+
 app.use("/api/withdraw", withdrawRoutes);
+
+// ─────────────────────────────────────────────
+// TRANSACTIONS
+// ─────────────────────────────────────────────
+
 app.use("/api/transactions", transactionRoutes);
+
+// ─────────────────────────────────────────────
+// VTU
+// ─────────────────────────────────────────────
+
 app.use("/api/vtu", vtuRoutes);
 app.use("/api/buydata", buyDataRoutes);
 app.use("/api/cabletv", cableTvRoutes);
 app.use("/api/buycabletv", buyCableTvRoutes);
 app.use("/api/electricity", electricityRoutes);
 app.use("/api/education", educationRoutes);
-app.use("/api/forgot-password", forgetpassRoutes);
-app.use("/api/ping", pingRoutes);
 app.use("/api/sms", smsRoutes);
 app.use("/api/airtime", airtimeRoutes);
 app.use("/api/betting", bettingRoutes);
 app.use("/api/giftcards", giftcardsRoutes);
-app.use("/api/virtual-account", virtualAccountRoutes);
+
+// ─────────────────────────────────────────────
+// FORGOT PASSWORD
+// ─────────────────────────────────────────────
+
+app.use(
+  "/api/forgot-password",
+  forgetpassRoutes
+);
+
+// ─────────────────────────────────────────────
+// PING
+// ─────────────────────────────────────────────
+
+app.use("/api/ping", pingRoutes);
+
+// ─────────────────────────────────────────────
+// VIRTUAL ACCOUNTS
+// ─────────────────────────────────────────────
+
+app.use(
+  "/api/virtual-account",
+  virtualAccountRoutes
+);
+
+// ─────────────────────────────────────────────
+// NOTIFICATIONS
+//
+// GET    /api/notifications
+// POST   /api/notifications
+// DELETE /api/notifications/:id
+// PATCH  /api/notifications/:id/deactivate
+// ─────────────────────────────────────────────
+
+app.use(
+  "/api/notifications",
+  notificationRoutes
+);
 
 // ─────────────────────────────────────────────
 // WEBHOOKS
+//
+// PaymentPoint:
+// POST /api/webhook/paymentpoint
+//
+// EasyAccess:
+// POST /api/webhook/easyaccess
 // ─────────────────────────────────────────────
 
-app.use("/api/webhook", webhookRoutes);
+app.use(
+  "/api/webhook",
+  webhookRoutes
+);
 
 // ─────────────────────────────────────────────
-// HEALTH
+// HEALTH CHECK
 // ─────────────────────────────────────────────
 
 app.get("/", (req, res) => {
@@ -172,3 +254,4 @@ app.listen(PORT, () => {
     `⚡ Server running on port ${PORT}`
   );
 });
+
