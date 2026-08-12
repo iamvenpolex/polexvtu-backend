@@ -5,8 +5,8 @@ require("dotenv").config();
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const db = require("../config/db");
 const jwt = require("jsonwebtoken");
+const db = require("../config/db");
 
 const API_KEY = process.env.API_247_KEY;
 const BASE_URL = "https://247api.com.ng/api";
@@ -17,32 +17,57 @@ const MAX_AIRTIME = 50000;
 
 // =====================================================
 // NETWORKS
-// Provider IDs must match 247API
+// 247API PROVIDER IDS
 // =====================================================
 
 const NETWORKS = {
   "1": {
     id: 1,
     name: "MTN",
-    prefixes: ["0703", "0706", "0803", "0806", "0810", "0813"],
+    prefixes: [
+      "0703",
+      "0706",
+      "0803",
+      "0806",
+      "0810",
+      "0813",
+    ],
   },
 
   "2": {
     id: 2,
     name: "Airtel",
-    prefixes: ["0802", "0808", "0708", "0812", "0701"],
+    prefixes: [
+      "0802",
+      "0808",
+      "0708",
+      "0812",
+      "0701",
+    ],
   },
 
   "3": {
     id: 3,
     name: "Glo",
-    prefixes: ["0805", "0807", "0705", "0815", "0811"],
+    prefixes: [
+      "0805",
+      "0807",
+      "0705",
+      "0815",
+      "0811",
+    ],
   },
 
   "4": {
     id: 4,
     name: "9mobile",
-    prefixes: ["0809", "0818", "0817", "0908", "0909"],
+    prefixes: [
+      "0809",
+      "0818",
+      "0817",
+      "0908",
+      "0909",
+    ],
   },
 };
 
@@ -62,7 +87,7 @@ const protect = (req, res, next) => {
 
   const parts = authHeader.split(" ");
 
-  if (parts.length !== 2) {
+  if (parts.length !== 2 || parts[0] !== "Bearer") {
     return res.status(401).json({
       success: false,
       message: "Invalid authorization format",
@@ -87,35 +112,66 @@ const protect = (req, res, next) => {
 // =====================================================
 
 function mapTransactionStatus(apiResponse) {
-  const status = String(apiResponse?.status || "").toLowerCase();
+  const status = String(
+    apiResponse?.status || ""
+  ).toLowerCase();
 
-  if (status === "success") {
+  const secondaryStatus = String(
+    apiResponse?.Status || ""
+  ).toLowerCase();
+
+  const responseText = String(
+    apiResponse?.response ||
+      apiResponse?.api_response ||
+      ""
+  ).toLowerCase();
+
+  if (
+    status === "success" ||
+    secondaryStatus === "successful"
+  ) {
     return "success";
   }
 
-  if (status === "pending") {
+  if (
+    status === "pending" ||
+    secondaryStatus === "pending"
+  ) {
     return "pending";
   }
 
   if (
     status === "failed" ||
     status === "fail" ||
-    status === "failure"
+    status === "failure" ||
+    secondaryStatus === "failed" ||
+    secondaryStatus === "failure"
   ) {
     return "failed";
+  }
+
+  if (
+    responseText.includes("transaction successful") ||
+    responseText.includes("successful")
+  ) {
+    return "success";
   }
 
   return "failed";
 }
 
 // =====================================================
-// GENERATE OUR INTERNAL REFERENCE
+// INTERNAL REFERENCE
 // =====================================================
 
 function generateReference() {
   return `AIRTIME_${Date.now()}_${Math.floor(
     Math.random() * 100000
   )}`;
+}
+
+function generateCashbackReference(reference) {
+  return `CASHBACK_${reference}`;
 }
 
 // =====================================================
@@ -173,9 +229,9 @@ router.post("/buy", protect, async (req, res) => {
       plan_type = "VTU",
     } = req.body;
 
-    // -----------------------------------------------
+    // =================================================
     // VALIDATION
-    // -----------------------------------------------
+    // =================================================
 
     if (!network || !amount || !phone) {
       return res.status(400).json({
@@ -207,9 +263,9 @@ router.post("/buy", protect, async (req, res) => {
       });
     }
 
-    // -----------------------------------------------
-    // NETWORK + PHONE CHECK
-    // -----------------------------------------------
+    // =================================================
+    // NETWORK + PHONE VALIDATION
+    // =================================================
 
     const validation = validateNetworkAndPhone(
       network,
@@ -225,9 +281,9 @@ router.post("/buy", protect, async (req, res) => {
 
     const selectedNetwork = validation.network;
 
-    // -----------------------------------------------
+    // =================================================
     // GET USER
-    // -----------------------------------------------
+    // =================================================
 
     const users = await db`
       SELECT id, balance
@@ -254,30 +310,32 @@ router.post("/buy", protect, async (req, res) => {
       });
     }
 
-    // -----------------------------------------------
+    // =================================================
     // CASHBACK
-    // -----------------------------------------------
+    // =================================================
 
     const cashback = Math.floor(
       numericAmount * CASHBACK_RATE
     );
 
-    const balanceAfter = balanceBefore - numericAmount;
+    // Amount remaining immediately after purchase
+    const balanceAfterPurchase =
+      balanceBefore - numericAmount;
 
-    // -----------------------------------------------
+    // =================================================
     // INTERNAL REFERENCE
-    // -----------------------------------------------
+    // =================================================
 
     reference = generateReference();
 
-    // -----------------------------------------------
+    // =================================================
     // DEDUCT WALLET + CREATE PENDING TRANSACTION
-    // -----------------------------------------------
+    // =================================================
 
     await db.begin(async (sql) => {
       await sql`
         UPDATE users
-        SET balance = ${balanceAfter}
+        SET balance = ${balanceAfterPurchase}
         WHERE id = ${req.user.id}
       `;
 
@@ -314,14 +372,14 @@ router.post("/buy", protect, async (req, res) => {
           'wallet',
           ${`Airtime purchase for ${phone}`},
           ${balanceBefore},
-          ${balanceAfter}
+          ${balanceAfterPurchase}
         )
       `;
     });
 
-    // -----------------------------------------------
+    // =================================================
     // CALL 247API
-    // -----------------------------------------------
+    // =================================================
 
     let apiResponse;
 
@@ -347,13 +405,14 @@ router.post("/buy", protect, async (req, res) => {
     } catch (apiError) {
       console.error(
         "247API AIRTIME ERROR:",
-        apiError.response?.data || apiError.message
+        apiError.response?.data ||
+          apiError.message
       );
 
-      // ---------------------------------------------
+      // ===============================================
       // PROVIDER REQUEST FAILED
       // REFUND USER
-      // ---------------------------------------------
+      // ===============================================
 
       await db.begin(async (sql) => {
         await sql`
@@ -376,46 +435,46 @@ router.post("/buy", protect, async (req, res) => {
             updated_at = NOW()
           WHERE reference = ${reference}
             AND user_id = ${req.user.id}
+            AND status = 'pending'
         `;
       });
 
       return res.status(500).json({
         success: false,
         status: "failed",
-        message: "Provider unavailable. Wallet refunded.",
+        message:
+          "Provider unavailable. Wallet refunded.",
         reference,
+        cashback: 0,
       });
     }
 
+    // =================================================
+    // PROVIDER RESPONSE
+    // =================================================
+
     const raw = apiResponse.data;
 
-    console.log("247API AIRTIME RESPONSE:", raw);
+    console.log(
+      "247API AIRTIME RESPONSE:",
+      raw
+    );
 
-    // ---------------------------------------------
-    // PROVIDER REQUEST ID
-    // ---------------------------------------------
+    // =================================================
+    // PROVIDER REFERENCE
+    // =================================================
 
     const providerReference =
       raw?.["request-id"] ||
       raw?.request_id ||
       null;
 
-    // ---------------------------------------------
-    // SAVE PROVIDER REFERENCE
-    // ---------------------------------------------
+    // =================================================
+    // DETERMINE STATUS
+    // =================================================
 
-    await db`
-      UPDATE transactions
-      SET
-        provider_reference = ${providerReference},
-        api_response = ${JSON.stringify(raw)},
-        api_amount = ${raw?.amount || numericAmount},
-        updated_at = NOW()
-      WHERE reference = ${reference}
-        AND user_id = ${req.user.id}
-    `;
-
-    const finalStatus = mapTransactionStatus(raw);
+    const finalStatus =
+      mapTransactionStatus(raw);
 
     // =================================================
     // SUCCESS
@@ -423,23 +482,24 @@ router.post("/buy", protect, async (req, res) => {
 
     if (finalStatus === "success") {
       const balanceAfterCashback =
-        balanceAfter + cashback;
+        balanceAfterPurchase + cashback;
+
+      const cashbackReference =
+        generateCashbackReference(reference);
 
       await db.begin(async (sql) => {
-        // Credit cashback
-        await sql`
-          UPDATE users
-          SET balance = ${balanceAfterCashback}
-          WHERE id = ${req.user.id}
-        `;
+        // ---------------------------------------------
+        // UPDATE MAIN AIRTIME TRANSACTION
+        // ---------------------------------------------
 
-        // Complete main transaction
         await sql`
           UPDATE transactions
           SET
             status = 'success',
             provider_reference = ${providerReference},
-            api_amount = ${raw?.amount || numericAmount},
+            api_amount = ${
+              raw?.amount || numericAmount
+            },
             api_response = ${JSON.stringify({
               ...raw,
               cashback_applied: cashback,
@@ -451,8 +511,25 @@ router.post("/buy", protect, async (req, res) => {
             AND status = 'pending'
         `;
 
-        // Cashback transaction
+        // ---------------------------------------------
+        // CREDIT CASHBACK
+        // ---------------------------------------------
+
         if (cashback > 0) {
+          await sql`
+            UPDATE users
+            SET balance = ${balanceAfterCashback}
+            WHERE id = ${req.user.id}
+          `;
+
+          // -------------------------------------------
+          // IMPORTANT:
+          // provider_reference MUST BE NULL HERE.
+          //
+          // The 247API provider reference belongs only
+          // to the actual airtime transaction.
+          // -------------------------------------------
+
           await sql`
             INSERT INTO transactions (
               user_id,
@@ -471,10 +548,10 @@ router.post("/buy", protect, async (req, res) => {
               balance_before,
               balance_after
             )
-            SELECT
+            VALUES (
               ${req.user.id},
-              ${`CASHBACK_${reference}`},
-              ${providerReference},
+              ${cashbackReference},
+              NULL,
               'cashback',
               ${cashback},
               'success',
@@ -485,13 +562,10 @@ router.post("/buy", protect, async (req, res) => {
               ${phone},
               'cashback',
               ${`1% cashback on airtime for ${phone}`},
-              ${balanceAfter},
+              ${balanceAfterPurchase},
               ${balanceAfterCashback}
-            WHERE NOT EXISTS (
-              SELECT 1
-              FROM transactions
-              WHERE reference = ${`CASHBACK_${reference}`}
             )
+            ON CONFLICT (reference) DO NOTHING
           `;
         }
       });
@@ -503,7 +577,8 @@ router.post("/buy", protect, async (req, res) => {
           raw?.message ||
           "Airtime purchase successful",
         reference,
-        provider_reference: providerReference,
+        provider_reference:
+          providerReference,
         transaction_status: "success",
         cashback,
         api_response: raw,
@@ -520,11 +595,14 @@ router.post("/buy", protect, async (req, res) => {
         SET
           status = 'pending',
           provider_reference = ${providerReference},
-          api_amount = ${raw?.amount || numericAmount},
+          api_amount = ${
+            raw?.amount || numericAmount
+          },
           api_response = ${JSON.stringify(raw)},
           updated_at = NOW()
         WHERE reference = ${reference}
           AND user_id = ${req.user.id}
+          AND status = 'pending'
       `;
 
       return res.json({
@@ -534,7 +612,8 @@ router.post("/buy", protect, async (req, res) => {
           raw?.message ||
           "Transaction is being processed",
         reference,
-        provider_reference: providerReference,
+        provider_reference:
+          providerReference,
         transaction_status: "pending",
         cashback: 0,
         api_response: raw,
@@ -546,11 +625,19 @@ router.post("/buy", protect, async (req, res) => {
     // =================================================
 
     await db.begin(async (sql) => {
+      // ---------------------------------------------
+      // REFUND WALLET
+      // ---------------------------------------------
+
       await sql`
         UPDATE users
         SET balance = ${balanceBefore}
         WHERE id = ${req.user.id}
       `;
+
+      // ---------------------------------------------
+      // MARK TRANSACTION FAILED
+      // ---------------------------------------------
 
       await sql`
         UPDATE transactions
@@ -558,12 +645,15 @@ router.post("/buy", protect, async (req, res) => {
           status = 'failed',
           refunded = true,
           provider_reference = ${providerReference},
-          api_amount = ${raw?.amount || 0},
+          api_amount = ${
+            raw?.amount || 0
+          },
           api_response = ${JSON.stringify(raw)},
           balance_after = ${balanceBefore},
           updated_at = NOW()
         WHERE reference = ${reference}
           AND user_id = ${req.user.id}
+          AND status = 'pending'
       `;
     });
 
@@ -574,7 +664,8 @@ router.post("/buy", protect, async (req, res) => {
         raw?.message ||
         "Airtime purchase failed. Wallet refunded.",
       reference,
-      provider_reference: providerReference,
+      provider_reference:
+        providerReference,
       transaction_status: "failed",
       cashback: 0,
       api_response: raw,
@@ -585,9 +676,80 @@ router.post("/buy", protect, async (req, res) => {
       error
     );
 
+    // =================================================
+    // SAFETY REFUND
+    //
+    // If an unexpected error happens after wallet
+    // deduction, try to refund a still-pending
+    // transaction.
+    // =================================================
+
+    if (reference) {
+      try {
+        await db.begin(async (sql) => {
+          const transactions = await sql`
+            SELECT
+              user_id,
+              balance_before,
+              amount,
+              status,
+              refunded
+            FROM transactions
+            WHERE reference = ${reference}
+              AND user_id = ${req.user.id}
+            LIMIT 1
+          `;
+
+          const transaction =
+            transactions[0];
+
+          if (
+            transaction &&
+            transaction.status === "pending" &&
+            transaction.refunded === false
+          ) {
+            const refundBalance =
+              Number(
+                transaction.balance_before
+              );
+
+            await sql`
+              UPDATE users
+              SET balance = ${refundBalance}
+              WHERE id = ${req.user.id}
+            `;
+
+            await sql`
+              UPDATE transactions
+              SET
+                status = 'failed',
+                refunded = true,
+                balance_after = ${refundBalance},
+                api_response = ${JSON.stringify({
+                  error:
+                    "Internal error after wallet deduction",
+                })},
+                updated_at = NOW()
+              WHERE reference = ${reference}
+                AND user_id = ${req.user.id}
+                AND status = 'pending'
+            `;
+          }
+        });
+      } catch (refundError) {
+        console.error(
+          "AIRTIME SAFETY REFUND ERROR:",
+          refundError
+        );
+      }
+    }
+
     return res.status(500).json({
       success: false,
-      message: "Internal server error",
+      status: "failed",
+      message:
+        "Internal server error",
+      reference,
     });
   }
 });
@@ -603,26 +765,25 @@ router.get(
   async (req, res) => {
     try {
       const rows = await db`
-        SELECT phone
-        FROM (
-          SELECT
-            phone,
-            MAX(created_at) AS last_used
-          FROM transactions
-          WHERE user_id = ${req.user.id}
-            AND status = 'success'
-            AND type = 'airtime'
-            AND phone IS NOT NULL
-            AND phone != ''
-          GROUP BY phone
-        ) sub
+        SELECT
+          phone,
+          MAX(created_at) AS last_used
+        FROM transactions
+        WHERE user_id = ${req.user.id}
+          AND status = 'success'
+          AND type = 'airtime'
+          AND phone IS NOT NULL
+          AND phone != ''
+        GROUP BY phone
         ORDER BY last_used DESC
         LIMIT 6
       `;
 
       return res.json({
         success: true,
-        phones: rows.map((row) => row.phone),
+        phones: rows.map(
+          (row) => row.phone
+        ),
       });
     } catch (error) {
       console.error(
@@ -653,7 +814,8 @@ router.get(
         {
           headers: {
             Authorization: `Token ${API_KEY}`,
-            "Content-Type": "application/json",
+            "Content-Type":
+              "application/json",
           },
           timeout: 30000,
         }
@@ -672,7 +834,8 @@ router.get(
 
       return res.status(500).json({
         success: false,
-        message: "Failed to fetch networks",
+        message:
+          "Failed to fetch networks",
       });
     }
   }
