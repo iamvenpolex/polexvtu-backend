@@ -1,8 +1,9 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const db = require("../config/db"); // postgres.js client
+const db = require("../config/db");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 
 // ------------------------
 // Middleware: Protect Routes
@@ -19,9 +20,7 @@ const protect = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
-    return res
-      .status(401)
-      .json({ message: "Token invalid or expired. Login again" });
+    return res.status(401).json({ message: "Token invalid or expired. Login again" });
   }
 };
 
@@ -30,15 +29,12 @@ const protect = (req, res, next) => {
 // ------------------------
 router.get("/balance", protect, async (req, res) => {
   try {
-    const userId = req.user.id;
-
     const users = await db`
       SELECT first_name, last_name, balance, reward
       FROM users
-      WHERE id = ${userId}
+      WHERE id = ${req.user.id}
     `;
-    if (!users.length)
-      return res.status(404).json({ message: "User not found" });
+    if (!users.length) return res.status(404).json({ message: "User not found" });
 
     const user = users[0];
     res.json({
@@ -63,9 +59,10 @@ router.post("/fund", protect, async (req, res) => {
 
     if (!amount || amount <= 0)
       return res.status(400).json({ message: "Invalid amount" });
-    if (!email) return res.status(400).json({ message: "Email is required" });
+    if (!email)
+      return res.status(400).json({ message: "Email is required" });
 
-    const koboAmount = amount * 100;
+    const koboAmount = Math.round(amount * 100);
 
     const response = await axios.post(
       "https://api.paystack.co/transaction/initialize",
@@ -84,10 +81,23 @@ router.post("/fund", protect, async (req, res) => {
 
     const { authorization_url, reference } = response.data.data;
 
-    // Save pending transaction
+    // Fetch current balance for balance_before
+    const users = await db`SELECT balance FROM users WHERE id = ${userId}`;
+    const balanceBefore = Number(users[0]?.balance || 0);
+
+    // Save pending transaction with all required fields
     await db`
-      INSERT INTO transactions (user_id, reference, amount, type, status)
-      VALUES (${userId}, ${reference}, ${amount}, 'fund', 'pending')
+      INSERT INTO transactions (
+        user_id, reference, type, amount, status,
+        description, balance_before, balance_after,
+        amount_paid, settlement_fee, settlement_amount,
+        via, created_at, updated_at
+      ) VALUES (
+        ${userId}, ${reference}, 'fund', ${amount}, 'pending',
+        'Wallet funding via Paystack', ${balanceBefore}, ${balanceBefore},
+        0, 0, 0,
+        'paystack', NOW(), NOW()
+      )
     `;
 
     res.json({ authorization_url, reference });
@@ -126,31 +136,50 @@ async function verifyAndUpdate(reference) {
     { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
   );
 
-  const { status, amount } = response.data.data;
-  if (status !== "success") throw new Error("Payment not successful");
+  const paystackData = response.data.data;
+  if (paystackData.status !== "success") throw new Error("Payment not successful");
 
+  // Amounts from Paystack (in kobo → convert to naira)
+  const amountPaid       = paystackData.amount / 100;
+  const settlementFee    = (paystackData.fees || 0) / 100;
+  const settlementAmount = amountPaid - settlementFee;
+
+  // Fetch the pending transaction
   const transactions = await db`
-    SELECT user_id, status
+    SELECT id, user_id, status, balance_before
     FROM transactions
     WHERE reference = ${reference}
   `;
   if (!transactions.length) throw new Error("Transaction not found");
 
   const transaction = transactions[0];
-  if (transaction.status === "success") return; // Already processed
+  if (transaction.status === "success") return; // Already processed — idempotent
 
-  const userId = transaction.user_id;
-  const nairaAmount = amount / 100;
+  const userId        = transaction.user_id;
+  const balanceBefore = Number(transaction.balance_before);
+  const balanceAfter  = balanceBefore + amountPaid;
 
+  // Update transaction with full details
   await db`
     UPDATE transactions
-    SET status = 'success', amount = ${nairaAmount}
+    SET
+      status            = 'success',
+      amount            = ${amountPaid},
+      amount_paid       = ${amountPaid},
+      settlement_fee    = ${settlementFee},
+      settlement_amount = ${settlementAmount},
+      balance_after     = ${balanceAfter},
+      provider_reference = ${paystackData.id?.toString() || null},
+      provider_status   = ${paystackData.status},
+      api_response      = ${JSON.stringify(paystackData)},
+      updated_at        = NOW()
     WHERE reference = ${reference}
   `;
 
+  // Credit user wallet
   await db`
     UPDATE users
-    SET balance = balance + ${nairaAmount}
+    SET balance = ${balanceAfter}
     WHERE id = ${userId}
   `;
 }
@@ -181,25 +210,29 @@ router.get("/verify-transaction", protect, async (req, res) => {
 // ------------------------
 router.post("/fund/webhook", async (req, res) => {
   try {
+    // Verify webhook signature from Paystack
+    const hash = crypto
+      .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
+      .update(JSON.stringify(req.body))
+      .digest("hex");
+
+    if (hash !== req.headers["x-paystack-signature"]) {
+      console.warn("⚠️ Invalid Paystack webhook signature");
+      return res.sendStatus(401);
+    }
+
     const event = req.body;
 
-    // Optional: Verify webhook signature
-    const hash = req.headers["x-paystack-signature"];
-    const secret = process.env.PAYSTACK_SECRET_KEY;
-    // You can use crypto to validate the hash if desired
-
-    // Only act on successful charges
     if (event.event === "charge.success") {
       const reference = event.data.reference;
       try {
-        await verifyAndUpdate(reference); // Use your existing helper
-        console.log(`Webhook processed: ${reference}`);
+        await verifyAndUpdate(reference);
+        console.log(`✅ Webhook processed: ${reference}`);
       } catch (err) {
-        console.error("Webhook verify error:", err);
+        console.error("Webhook verify error:", err.message);
       }
     }
 
-    // Respond 200 to Paystack
     res.sendStatus(200);
   } catch (err) {
     console.error("Webhook error:", err);
