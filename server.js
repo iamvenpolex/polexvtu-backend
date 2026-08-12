@@ -32,6 +32,7 @@ const webhookRoutes = require("./routes/webhook");
 const virtualAccountRoutes = require("./routes/virtualAccount");
 const notificationRoutes = require("./routes/notifications");
 const walletAdminRoutes = require("./routes/wallet-admin");
+const airtimeWebhookRoutes = require("./routes/airtimeWebhook");
 
 // ─────────────────────────────────────────────
 // JOBS
@@ -154,6 +155,8 @@ app.use("/api/airtime", airtimeRoutes);
 app.use("/api/betting", bettingRoutes);
 app.use("/api/giftcards", giftcardsRoutes);
 app.use("/api/admin", walletAdminRoutes);
+app.use("/api/webhooks", airtimeWebhookRoutes);
+
 // ─────────────────────────────────────────────
 // FORGOT PASSWORD
 // ─────────────────────────────────────────────
