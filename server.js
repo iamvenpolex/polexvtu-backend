@@ -1,3 +1,5 @@
+"use strict";
+
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -51,16 +53,11 @@ const allowedOrigins = [
 app.use(
   cors({
     origin(origin, callback) {
-      if (
-        !origin ||
-        allowedOrigins.includes(origin)
-      ) {
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
-      return callback(
-        new Error("Not allowed by CORS")
-      );
+      return callback(new Error("Not allowed by CORS"));
     },
 
     methods: [
@@ -75,6 +72,8 @@ app.use(
     allowedHeaders: [
       "Content-Type",
       "Authorization",
+      "PaymentPoint-Signature",
+      "paymentpoint-signature",
     ],
 
     credentials: true,
@@ -82,10 +81,18 @@ app.use(
 );
 
 // ─────────────────────────────────────────────
-// JSON
+// JSON BODY PARSER
+// Keep the RAW body for PaymentPoint webhook
+// signature verification.
 // ─────────────────────────────────────────────
 
-app.use(express.json());
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = Buffer.from(buf);
+    },
+  })
+);
 
 // ─────────────────────────────────────────────
 // ROUTES
@@ -111,7 +118,10 @@ app.use("/api/betting", bettingRoutes);
 app.use("/api/giftcards", giftcardsRoutes);
 app.use("/api/virtual-account", virtualAccountRoutes);
 
-// EasyAccess webhook
+// ─────────────────────────────────────────────
+// WEBHOOKS
+// ─────────────────────────────────────────────
+
 app.use("/api/webhook", webhookRoutes);
 
 // ─────────────────────────────────────────────
