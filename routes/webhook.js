@@ -747,13 +747,13 @@ router.post(
       // Customer pays: ₦100
       // PaymentPoint fee: ₦0.50
       // Settlement: ₦99.50
-      // User wallet: ₦100.00
+      // User wallet: ₦99.50
       //
-      // TapAm absorbs ₦0.50.
+      // User absorbs ₦0.50.
       // =================================================
 
       const creditAmount =
-        amountPaid;
+        settlementAmount;
 
       // =================================================
       // DATABASE TRANSACTION
